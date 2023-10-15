@@ -164,6 +164,7 @@ enum {
   DELTA_Q_PERCEPTUAL_AI = 3,  // Perceptual quality opt for all intra mode
   DELTA_Q_USER_RATING_BASED = 4,  // User rating based delta q mode
   DELTA_Q_HDR = 5,    // QP adjustment based on HDR block pixel average
+  DELTA_Q_LAVISH = 6, // Objective quality, with QP adjustment
   DELTA_Q_MODE_COUNT  // This should always be the last member of the enum
 } UENUM1BYTE(DELTAQ_MODE);
 
@@ -1150,7 +1151,17 @@ typedef struct AV1EncoderConfig {
   int vmaf_rd_mult;
 #endif
 
-  int tpl_rd_mult;
+  int tpl_strength;
+
+  int luma_bias_strength;
+
+  int luma_bias_midpoint;
+
+  bool invert_luma_bias;
+
+  bool luma_bias_override;
+
+  int frame_periodic_boost; // Fully implement frame periodic boost from VP9
 
   // A flag to control if we enable the superblock qp sweep for a given lambda
   int sb_qp_sweep;

@@ -43,9 +43,13 @@ int aom_calc_butteraugli(AV1_COMP *cpi, const YV12_BUFFER_CONFIG *source,
   const size_t buffer_size = height * stride_argb * (bit_depth > 8 ? 2 : 1);
   uint8_t *src_argb = (uint8_t *)aom_malloc(buffer_size);
   uint8_t *distorted_argb = (uint8_t *)aom_malloc(buffer_size);
+  uint8_t *src_rgba = (uint8_t *)aom_malloc(buffer_size);
+  uint8_t *distorted_rgba = (uint8_t *)aom_malloc(buffer_size);
   if (!src_argb || !distorted_argb) {
     aom_free(src_argb);
     aom_free(distorted_argb);
+    aom_free(src_rgba);
+    aom_free(distorted_rgba);
     return 0;
   }
 
@@ -68,6 +72,9 @@ int aom_calc_butteraugli(AV1_COMP *cpi, const YV12_BUFFER_CONFIG *source,
                       CONVERT_TO_SHORTPTR(distorted->u_buffer), distorted->uv_stride,
                       CONVERT_TO_SHORTPTR(distorted->v_buffer), distorted->uv_stride,
                       distorted_argb, stride_argb, yuv_constants, width, height);
+
+      BGRAToARGB(src_argb, stride_argb, src_rgba, stride_argb, width, height);
+      BGRAToARGB(distorted_argb, stride_argb, distorted_rgba, stride_argb, width, height);
     }
   } else if (ss_x == 1 && ss_y == 0) {
     if (bit_depth == 8) {
@@ -110,13 +117,15 @@ int aom_calc_butteraugli(AV1_COMP *cpi, const YV12_BUFFER_CONFIG *source,
   } else {
     aom_free(src_argb);
     aom_free(distorted_argb);
+    aom_free(src_rgba);
+    aom_free(distorted_rgba);
     return 0;
   }
   float hf_asym_val = (float)hf_asymmetry / 10.0f;
   JxlPixelFormat pixel_format = { 4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0 };
   if (bit_depth == 10 || bit_depth == 12) {
     pixel_format.data_type = JXL_TYPE_UINT16;
-    pixel_format.endianness = JXL_BIG_ENDIAN;
+    //pixel_format.endianness = JXL_BIG_ENDIAN;
   }
   JxlButteraugliApi *api = JxlButteraugliApiCreate(NULL);
   JxlParallelRunner runner = JxlThreadParallelRunnerCreate(NULL, 6);
@@ -125,20 +134,22 @@ int aom_calc_butteraugli(AV1_COMP *cpi, const YV12_BUFFER_CONFIG *source,
   JxlButteraugliApiSetIntensityTarget(api, (float)target_intensity);
 
   JxlButteraugliResult *result = JxlButteraugliCompute(
-      api, width, height, &pixel_format, src_argb, buffer_size, &pixel_format,
-      distorted_argb, buffer_size);
+      api, width, height, &pixel_format, src_rgba, buffer_size, &pixel_format,
+      distorted_rgba, buffer_size);
 
   const float *distmap = NULL;
   uint32_t row_stride;
   JxlButteraugliResultGetDistmap(result, &distmap, &row_stride);
-  cpi->butteraugli_info.distance = JxlButteraugliResultGetDistance(result, 3.0f);
-  //printf("distance: %f, bit_depth: %d, row_stride: %d\n", cpi->butteraugli_info.distance, bit_depth, row_stride);
+  cpi->butteraugli_info.distance = JxlButteraugliResultGetDistance(result, 1.0f);
+  printf("distance: %f, bit_depth: %d, row_stride: %d\n", cpi->butteraugli_info.distance, bit_depth, row_stride);
   if (distmap == NULL) {
     JxlButteraugliApiDestroy(api);
     JxlButteraugliResultDestroy(result);
     JxlThreadParallelRunnerDestroy(runner);
     aom_free(src_argb);
     aom_free(distorted_argb);
+    aom_free(src_rgba);
+    aom_free(distorted_rgba);
     return 0;
   }
 
@@ -153,5 +164,7 @@ int aom_calc_butteraugli(AV1_COMP *cpi, const YV12_BUFFER_CONFIG *source,
   JxlThreadParallelRunnerDestroy(runner);
   aom_free(src_argb);
   aom_free(distorted_argb);
+  aom_free(src_rgba);
+  aom_free(distorted_rgba);
   return 1;
 }
