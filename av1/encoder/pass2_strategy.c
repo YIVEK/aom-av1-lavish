@@ -1035,9 +1035,9 @@ static INLINE int detect_gf_cut(AV1_COMP *cpi, int frame_index, int cur_start,
   return 0;
 }
 
-static int is_shorter_gf_interval_better(AV1_COMP *cpi,
-                                         EncodeFrameParams *frame_params) {
-  RATE_CONTROL *const rc = &cpi->rc;
+static int is_shorter_gf_interval_better(
+    AV1_COMP *cpi, const EncodeFrameParams *frame_params) {
+  const RATE_CONTROL *const rc = &cpi->rc;
   PRIMARY_RATE_CONTROL *const p_rc = &cpi->ppi->p_rc;
   int gop_length_decision_method = cpi->sf.tpl_sf.gop_length_decision_method;
   int shorten_gf_interval;
@@ -3413,13 +3413,13 @@ static INLINE void set_twopass_params_based_on_fp_stats(
   TWO_PASS_FRAME *twopass_frame = &cpi->twopass_frame;
   // The multiplication by 256 reverses a scaling factor of (>> 8)
   // applied when combining MB error values for the frame.
-  twopass_frame->mb_av_energy = log((this_frame_ptr->intra_error) + 1.0);
+  twopass_frame->mb_av_energy = log1p(this_frame_ptr->intra_error);
 
   const FIRSTPASS_STATS *const total_stats =
       cpi->ppi->twopass.stats_buf_ctx->total_stats;
   if (is_fp_wavelet_energy_invalid(total_stats) == 0) {
     twopass_frame->frame_avg_haar_energy =
-        log((this_frame_ptr->frame_avg_wavelet_energy) + 1.0);
+        log1p(this_frame_ptr->frame_avg_wavelet_energy);
   }
 
   // Set the frame content type flag.

@@ -55,13 +55,13 @@ static INLINE int get_cubic_value_int(const int *p, const int16_t *kernel) {
 #endif  // CHECK_RESULTS
 
 // Compare two regions of width x height pixels, one rooted at position
-// (x, y) in frm and the other at (x + u, y + v) in ref.
+// (x, y) in src and the other at (x + u, y + v) in ref.
 // This function returns the sum of squared pixel differences between
 // the two regions.
 //
 // TODO(rachelbarker): Test speed/quality impact of using bilinear interpolation
 // instad of bicubic interpolation
-static INLINE void compute_flow_error(const uint8_t *ref, const uint8_t *frm,
+static INLINE void compute_flow_error(const uint8_t *src, const uint8_t *ref,
                                       int width, int height, int stride, int x,
                                       int y, double u, double v, int16_t *dt) {
   // This function is written to do 8x8 convolutions only
@@ -227,7 +227,7 @@ static INLINE void compute_flow_error(const uint8_t *ref, const uint8_t *frm,
 
     __m128i warped = _mm_packs_epi32(sum0_rounded, sum1_rounded);
     __m128i src_pixels_u8 =
-        _mm_loadu_si64((__m128i *)&frm[(y + i) * stride + x]);
+        _mm_loadu_si64((__m128i *)&src[(y + i) * stride + x]);
     __m128i src_pixels = _mm_slli_epi16(_mm_cvtepu8_epi16(src_pixels_u8), 3);
 
     // Calculate delta from the target patch
@@ -246,7 +246,7 @@ static INLINE void compute_flow_error(const uint8_t *ref, const uint8_t *frm,
       // earlier, but we also want to keep DISFLOW_DERIV_SCALE_LOG2 extra bits
       // of precision to match the scale of the dx and dy arrays.
       const int c_warped = ROUND_POWER_OF_TWO(result, round_bits);
-      const int c_src_px = frm[(x + j) + (y + i) * stride] << 3;
+      const int c_src_px = src[(x + j) + (y + i) * stride] << 3;
       const int c_err = c_warped - c_src_px;
       (void)c_err;
       assert(dt[i * DISFLOW_PATCH_SIZE + j] == c_err);
@@ -518,7 +518,7 @@ static INLINE void invert_2x2(const double *M, double *M_inv) {
   M_inv[3] = M[0] * det_inv;
 }
 
-void aom_compute_flow_at_point_sse4_1(const uint8_t *frm, const uint8_t *ref,
+void aom_compute_flow_at_point_sse4_1(const uint8_t *src, const uint8_t *ref,
                                       int x, int y, int width, int height,
                                       int stride, double *u, double *v) {
   double M[4];
@@ -527,19 +527,17 @@ void aom_compute_flow_at_point_sse4_1(const uint8_t *frm, const uint8_t *ref,
   int16_t dt[DISFLOW_PATCH_SIZE * DISFLOW_PATCH_SIZE];
   int16_t dx[DISFLOW_PATCH_SIZE * DISFLOW_PATCH_SIZE];
   int16_t dy[DISFLOW_PATCH_SIZE * DISFLOW_PATCH_SIZE];
-  const double o_u = *u;
-  const double o_v = *v;
 
   // Compute gradients within this patch
-  const uint8_t *frm_patch = &frm[y * stride + x];
-  sobel_filter_x(frm_patch, stride, dx, DISFLOW_PATCH_SIZE);
-  sobel_filter_y(frm_patch, stride, dy, DISFLOW_PATCH_SIZE);
+  const uint8_t *src_patch = &src[y * stride + x];
+  sobel_filter_x(src_patch, stride, dx, DISFLOW_PATCH_SIZE);
+  sobel_filter_y(src_patch, stride, dy, DISFLOW_PATCH_SIZE);
 
   compute_flow_matrix(dx, DISFLOW_PATCH_SIZE, dy, DISFLOW_PATCH_SIZE, M);
   invert_2x2(M, M_inv);
 
   for (int itr = 0; itr < DISFLOW_MAX_ITR; itr++) {
-    compute_flow_error(ref, frm, width, height, stride, x, y, *u, *v, dt);
+    compute_flow_error(src, ref, width, height, stride, x, y, *u, *v, dt);
     compute_flow_vector(dx, DISFLOW_PATCH_SIZE, dy, DISFLOW_PATCH_SIZE, dt,
                         DISFLOW_PATCH_SIZE, b);
 
@@ -547,17 +545,12 @@ void aom_compute_flow_at_point_sse4_1(const uint8_t *frm, const uint8_t *ref,
     // at this point
     const double step_u = M_inv[0] * b[0] + M_inv[1] * b[1];
     const double step_v = M_inv[2] * b[0] + M_inv[3] * b[1];
-    *u += step_u * DISFLOW_STEP_SIZE;
-    *v += step_v * DISFLOW_STEP_SIZE;
+    *u += fclamp(step_u * DISFLOW_STEP_SIZE, -2, 2);
+    *v += fclamp(step_v * DISFLOW_STEP_SIZE, -2, 2);
 
     if (fabs(step_u) + fabs(step_v) < DISFLOW_STEP_SIZE_THRESOLD) {
       // Stop iteration when we're close to convergence
       break;
     }
-  }
-  if (fabs(*u - o_u) > DISFLOW_PATCH_SIZE ||
-      fabs(*v - o_v) > DISFLOW_PATCH_SIZE) {
-    *u = o_u;
-    *v = o_v;
   }
 }

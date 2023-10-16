@@ -80,6 +80,10 @@ aom_codec_err_t aom_codec_enc_init_ver(aom_codec_ctx_t *ctx,
     res = ctx->iface->init(ctx);
 
     if (res) {
+      // IMPORTANT: ctx->priv->err_detail must be null or point to a string
+      // that remains valid after ctx->priv is destroyed, such as a C string
+      // literal. This makes it safe to call aom_codec_error_detail() after
+      // aom_codec_enc_init_ver() failed.
       ctx->err_detail = ctx->priv ? ctx->priv->err_detail : NULL;
       aom_codec_destroy(ctx);
     }
@@ -138,8 +142,10 @@ aom_codec_err_t aom_codec_enc_config_default(aom_codec_iface_t *iface,
   const int float_excepts =           \
       feenableexcept(FE_DIVBYZERO | FE_UNDERFLOW | FE_OVERFLOW);
 #define FLOATING_POINT_RESTORE_EXCEPTIONS \
-  fedisableexcept(FE_ALL_EXCEPT);         \
-  feenableexcept(float_excepts);
+  if (float_excepts != -1) {              \
+    fedisableexcept(FE_ALL_EXCEPT);       \
+    feenableexcept(float_excepts);        \
+  }
 #else
 #define FLOATING_POINT_SET_EXCEPTIONS
 #define FLOATING_POINT_RESTORE_EXCEPTIONS

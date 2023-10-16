@@ -354,7 +354,7 @@ void av1_update_frame_size(AV1_COMP *cpi) {
   if (!cpi->ppi->seq_params_locked)
     set_sb_size(cm->seq_params,
                 av1_select_sb_size(&cpi->oxcf, cm->width, cm->height,
-                                   cpi->svc.number_spatial_layers));
+                                   cpi->ppi->number_spatial_layers));
 
   set_tile_info(cm, &cpi->oxcf.tile_cfg);
 }
@@ -952,11 +952,10 @@ static INLINE void init_frame_index_set(FRAME_INDEX_SET *frame_index_set) {
   frame_index_set->show_frame_count = 0;
 }
 
-static INLINE void update_frame_index_set(FRAME_INDEX_SET *frame_index_set,
-                                          int is_show_frame) {
-  if (is_show_frame) {
-    frame_index_set->show_frame_count++;
-  }
+static INLINE void update_counters_for_show_frame(AV1_COMP *const cpi) {
+  assert(cpi->common.show_frame);
+  cpi->frame_index_set.show_frame_count++;
+  cpi->common.current_frame.frame_number++;
 }
 
 AV1_PRIMARY *av1_create_primary_compressor(
@@ -1470,6 +1469,7 @@ AV1_COMP *av1_create_compressor(AV1_PRIMARY *ppi, const AV1EncoderConfig *oxcf,
 
   cpi->mb_weber_stats = NULL;
   cpi->mb_delta_q = NULL;
+  cpi->palette_pixel_num = 0;
 
   {
     const int bsize = BLOCK_16X16;
@@ -1534,9 +1534,9 @@ AV1_COMP *av1_create_compressor(AV1_PRIMARY *ppi, const AV1EncoderConfig *oxcf,
     CHECK_MEM_ERROR(cm, cpi->saliency_map,
                     (uint8_t *)aom_calloc(cm->height * cm->width,
                                           sizeof(*cpi->saliency_map)));
-    // Buffer initialization based on MIN_MIB_SIZE_LOG2 to insure that
+    // Buffer initialization based on MIN_MIB_SIZE_LOG2 to ensure that
     // cpi->sm_scaling_factor buffer is allocated big enough, since we have no
-    // idea of the actual superblock size we gonna use yet.
+    // idea of the actual superblock size we are going to use yet.
     const int min_mi_w_sb = (1 << MIN_MIB_SIZE_LOG2);
     const int min_mi_h_sb = (1 << MIN_MIB_SIZE_LOG2);
     const int max_sb_cols =
@@ -1713,7 +1713,12 @@ void av1_remove_compressor(AV1_COMP *cpi) {
   av1_denoiser_free(&(cpi->denoiser));
 #endif
 
-  aom_free(cm->error);
+  if (cm->error) {
+    // Help detect use after free of the error detail string.
+    memset(cm->error->detail, 'A', sizeof(cm->error->detail) - 1);
+    cm->error->detail[sizeof(cm->error->detail) - 1] = '\0';
+    aom_free(cm->error);
+  }
   aom_free(cpi->td.tctx);
   MultiThreadInfo *const mt_info = &cpi->mt_info;
 #if CONFIG_MULTITHREAD
@@ -3583,7 +3588,7 @@ static void calculate_frame_avg_haar_energy(AV1_COMP *cpi) {
       src, stride, hbd, num_8x8_rows, num_8x8_cols);
 
   cpi->twopass_frame.frame_avg_haar_energy =
-      log(((double)frame_avg_wavelet_energy / num_mbs) + 1.0);
+      log1p((double)frame_avg_wavelet_energy / num_mbs);
 }
 #endif
 
@@ -3721,8 +3726,7 @@ static int encode_frame_to_data_rate(AV1_COMP *cpi, size_t *size,
     }
 #endif  // !CONFIG_REALTIME_ONLY
 
-    ++current_frame->frame_number;
-    update_frame_index_set(&cpi->frame_index_set, cm->show_frame);
+    update_counters_for_show_frame(cpi);
     return AOM_CODEC_OK;
   }
 
@@ -3777,12 +3781,27 @@ static int encode_frame_to_data_rate(AV1_COMP *cpi, size_t *size,
   // Never drop on key frame.
   if (has_no_stats_stage(cpi) && oxcf->rc_cfg.mode == AOM_CBR &&
       current_frame->frame_type != KEY_FRAME) {
+    FRAME_UPDATE_TYPE update_type =
+        cpi->ppi->gf_group.update_type[cpi->gf_frame_index];
+    (void)update_type;
+    assert(
+        IMPLIES(cpi->is_dropped_frame, (update_type == OVERLAY_UPDATE ||
+                                        update_type == INTNL_OVERLAY_UPDATE)));
     if (av1_rc_drop_frame(cpi)) {
+      cpi->is_dropped_frame = true;
+    }
+    if (cpi->is_dropped_frame) {
       av1_setup_frame_size(cpi);
       av1_set_mv_search_params(cpi);
       av1_rc_postencode_update_drop_frame(cpi);
       release_scaled_references(cpi);
-      cpi->is_dropped_frame = true;
+      cpi->ppi->gf_group.is_frame_dropped[cpi->gf_frame_index] = true;
+      // A dropped frame might not be shown but it always takes a slot in the gf
+      // group. Therefore, even when it is not shown, we still need to update
+      // the relevant frame counters.
+      if (cm->show_frame) {
+        update_counters_for_show_frame(cpi);
+      }
       return AOM_CODEC_OK;
     }
   }
@@ -3801,7 +3820,11 @@ static int encode_frame_to_data_rate(AV1_COMP *cpi, size_t *size,
     if (av1_set_saliency_map(cpi) == 0) {
       return AOM_CODEC_MEM_ERROR;
     }
+#if !CONFIG_REALTIME_ONLY
     double motion_ratio = av1_setup_motion_ratio(cpi);
+#else
+    double motion_ratio = 1.0;
+#endif
     if (av1_setup_sm_rdmult_scaling_factor(cpi, motion_ratio) == 0) {
       return AOM_CODEC_MEM_ERROR;
     }
@@ -3999,12 +4022,8 @@ static int encode_frame_to_data_rate(AV1_COMP *cpi, size_t *size,
   cm->seg.update_data = 0;
   cm->lf.mode_ref_delta_update = 0;
 
-  // A droppable frame might not be shown but it always
-  // takes a space in the gf group. Therefore, even when
-  // it is not shown, we still need update the count down.
   if (cm->show_frame) {
-    update_frame_index_set(&cpi->frame_index_set, cm->show_frame);
-    ++current_frame->frame_number;
+    update_counters_for_show_frame(cpi);
   }
 
 #if CONFIG_COLLECT_COMPONENT_TIMING

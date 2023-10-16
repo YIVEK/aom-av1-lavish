@@ -92,11 +92,6 @@ static AOM_INLINE void compute_global_motion_for_ref_frame(
   int src_width = cpi->source->y_crop_width;
   int src_height = cpi->source->y_crop_height;
   int src_stride = cpi->source->y_stride;
-  // clang-format off
-  static const double kIdentityParams[MAX_PARAMDIM - 1] = {
-     0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
-  };
-  // clang-format on
   WarpedMotionParams tmp_wm_params;
   const double *params_this_motion;
   assert(ref_buf[frame] != NULL);
@@ -106,74 +101,71 @@ static AOM_INLINE void compute_global_motion_for_ref_frame(
   int num_refinements = cpi->sf.gm_sf.num_refinement_steps;
 
   for (model = ROTZOOM; model < GLOBAL_TRANS_TYPES_ENC; ++model) {
-    int64_t best_warp_error = INT64_MAX;
-    // Initially set all params to identity.
-    for (i = 0; i < RANSAC_NUM_MOTIONS; ++i) {
-      memcpy(motion_models[i].params, kIdentityParams,
-             (MAX_PARAMDIM - 1) * sizeof(*(motion_models[i].params)));
-      motion_models[i].num_inliers = 0;
+    if (!aom_compute_global_motion(model, cpi->source, ref_buf[frame],
+                                   bit_depth, global_motion_method,
+                                   motion_models, RANSAC_NUM_MOTIONS)) {
+      continue;
     }
 
-    aom_compute_global_motion(model, cpi->source, ref_buf[frame], bit_depth,
-                              global_motion_method, motion_models,
-                              RANSAC_NUM_MOTIONS);
-    int64_t ref_frame_error = 0;
+    int64_t best_ref_frame_error = 0;
+    int64_t best_warp_error = INT64_MAX;
     for (i = 0; i < RANSAC_NUM_MOTIONS; ++i) {
       if (motion_models[i].num_inliers == 0) continue;
 
       params_this_motion = motion_models[i].params;
       av1_convert_model_to_params(params_this_motion, &tmp_wm_params);
 
-      // Work around a bug in the AV1 specification
+      // Skip models that we won't use (IDENTITY or TRANSLATION)
+      //
+      // For IDENTITY type models, we don't need to evaluate anything because
+      // all the following logic is effectively comparing the estimated model
+      // to an identity model.
       //
       // For TRANSLATION type global motion models, gm_get_motion_vector() gives
       // the wrong motion vector (see comments in that function for details).
       // As translation-type models do not give much gain, we can avoid this bug
       // by never choosing a TRANSLATION type model
-      if (tmp_wm_params.wmtype == TRANSLATION) {
-        continue;
-      }
+      if (tmp_wm_params.wmtype <= TRANSLATION) continue;
 
-      if (tmp_wm_params.wmtype != IDENTITY) {
-        av1_compute_feature_segmentation_map(
-            segment_map, segment_map_w, segment_map_h, motion_models[i].inliers,
-            motion_models[i].num_inliers);
+      av1_compute_feature_segmentation_map(
+          segment_map, segment_map_w, segment_map_h, motion_models[i].inliers,
+          motion_models[i].num_inliers);
 
-        ref_frame_error = av1_segmented_frame_error(
-            is_cur_buf_hbd(xd), xd->bd, ref_buf[frame]->y_buffer,
-            ref_buf[frame]->y_stride, cpi->source->y_buffer, src_width,
-            src_height, src_stride, segment_map, segment_map_w);
+      int64_t ref_frame_error = av1_segmented_frame_error(
+          is_cur_buf_hbd(xd), xd->bd, ref_buf[frame]->y_buffer,
+          ref_buf[frame]->y_stride, cpi->source->y_buffer, src_width,
+          src_height, src_stride, segment_map, segment_map_w);
 
-        const int64_t erroradv_threshold =
-            calc_erroradv_threshold(ref_frame_error);
+      if (ref_frame_error == 0) continue;
 
-        const int64_t warp_error = av1_refine_integerized_param(
-            &tmp_wm_params, tmp_wm_params.wmtype, is_cur_buf_hbd(xd), xd->bd,
-            ref_buf[frame]->y_buffer, ref_buf[frame]->y_crop_width,
-            ref_buf[frame]->y_crop_height, ref_buf[frame]->y_stride,
-            cpi->source->y_buffer, src_width, src_height, src_stride,
-            num_refinements, best_warp_error, segment_map, segment_map_w,
-            erroradv_threshold);
+      const int64_t erroradv_threshold =
+          calc_erroradv_threshold(ref_frame_error);
 
-        // av1_refine_integerized_param() can return a TRANSLATION type model
-        // even if its input is some other type, so we have to skip those too
-        if (tmp_wm_params.wmtype == TRANSLATION) {
-          continue;
-        }
+      const int64_t warp_error = av1_refine_integerized_param(
+          &tmp_wm_params, tmp_wm_params.wmtype, is_cur_buf_hbd(xd), xd->bd,
+          ref_buf[frame]->y_buffer, ref_buf[frame]->y_crop_width,
+          ref_buf[frame]->y_crop_height, ref_buf[frame]->y_stride,
+          cpi->source->y_buffer, src_width, src_height, src_stride,
+          num_refinements, best_warp_error, segment_map, segment_map_w,
+          erroradv_threshold);
 
-        if (warp_error < best_warp_error) {
-          best_warp_error = warp_error;
-          // Save the wm_params modified by
-          // av1_refine_integerized_param() rather than motion index to
-          // avoid rerunning refine() below.
-          memcpy(&(cm->global_motion[frame]), &tmp_wm_params,
-                 sizeof(WarpedMotionParams));
-        }
+      // av1_refine_integerized_param() can return a simpler model type than
+      // its input, so re-check model type here
+      if (tmp_wm_params.wmtype <= TRANSLATION) continue;
+
+      if (warp_error < best_warp_error) {
+        best_ref_frame_error = ref_frame_error;
+        best_warp_error = warp_error;
+        // Save the wm_params modified by
+        // av1_refine_integerized_param() rather than motion index to
+        // avoid rerunning refine() below.
+        memcpy(&(cm->global_motion[frame]), &tmp_wm_params,
+               sizeof(WarpedMotionParams));
       }
     }
-    if (cm->global_motion[frame].wmtype <= AFFINE)
-      if (!av1_get_shear_params(&cm->global_motion[frame]))
-        cm->global_motion[frame] = default_warp_params;
+    assert(cm->global_motion[frame].wmtype <= AFFINE);
+    if (!av1_get_shear_params(&cm->global_motion[frame]))
+      cm->global_motion[frame] = default_warp_params;
 
 #if 0
     // We never choose translational models, so this code is disabled
@@ -191,12 +183,15 @@ static AOM_INLINE void compute_global_motion_for_ref_frame(
 
     if (cm->global_motion[frame].wmtype == IDENTITY) continue;
 
-    if (ref_frame_error == 0) continue;
+    // Once we get here, best_ref_frame_error must be > 0. This is because
+    // of the logic above, which skips  over any models which have
+    // ref_frame_error == 0
+    assert(best_ref_frame_error > 0);
 
     // If the best error advantage found doesn't meet the threshold for
     // this motion type, revert to IDENTITY.
     if (!av1_is_enough_erroradvantage(
-            (double)best_warp_error / ref_frame_error,
+            (double)best_warp_error / best_ref_frame_error,
             gm_get_params_cost(&cm->global_motion[frame], ref_params,
                                cm->features.allow_high_precision_mv))) {
       cm->global_motion[frame] = default_warp_params;
@@ -239,7 +234,7 @@ static AOM_INLINE void compute_global_motion_for_references(
     // INVALID/TRANSLATION/IDENTITY, skip the evaluation of global motion w.r.t
     // the remaining ref frames in that direction.
     if (cpi->sf.gm_sf.prune_ref_frame_for_gm_search &&
-        cm->global_motion[ref_frame].wmtype != ROTZOOM)
+        cm->global_motion[ref_frame].wmtype <= TRANSLATION)
       break;
   }
 }

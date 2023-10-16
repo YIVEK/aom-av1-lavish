@@ -482,7 +482,7 @@ static int adjust_q_cbr(const AV1_COMP *cpi, int q, int active_worst_quality,
   const AV1_COMMON *const cm = &cpi->common;
   const RefreshFrameInfo *const refresh_frame = &cpi->refresh_frame;
   int max_delta_down;
-  const int max_delta_up = 20;
+  int max_delta_up = 20;
   const int change_avg_frame_bandwidth =
       abs(rc->avg_frame_bandwidth - rc->prev_avg_frame_bandwidth) >
       0.1 * (rc->avg_frame_bandwidth);
@@ -490,12 +490,20 @@ static int adjust_q_cbr(const AV1_COMP *cpi, int q, int active_worst_quality,
   // Set the maximum adjustment down for Q for this frame.
   if (cpi->oxcf.q_cfg.aq_mode == CYCLIC_REFRESH_AQ &&
       cpi->cyclic_refresh->apply_cyclic_refresh) {
-    max_delta_down = AOMMIN(16, AOMMAX(1, rc->q_1_frame / 8));
     // For static screen type content limit the Q drop till the start of the
     // next refresh cycle.
-    if (cpi->is_screen_content_type) {
-      if (cpi->cyclic_refresh->sb_index > cpi->cyclic_refresh->last_sb_index) {
-        max_delta_down = AOMMIN(8, AOMMAX(1, rc->q_1_frame / 32));
+    if (cpi->is_screen_content_type &&
+        (cpi->cyclic_refresh->sb_index > cpi->cyclic_refresh->last_sb_index)) {
+      max_delta_down = AOMMIN(8, AOMMAX(1, rc->q_1_frame / 32));
+    } else {
+      max_delta_down = AOMMIN(16, AOMMAX(1, rc->q_1_frame / 8));
+    }
+    if (!cpi->ppi->use_svc && cpi->is_screen_content_type) {
+      // Link max_delta_up to max_delta_down and buffer status.
+      if (p_rc->buffer_level > p_rc->optimal_buffer_level) {
+        max_delta_up = AOMMAX(4, max_delta_down);
+      } else {
+        max_delta_up = AOMMAX(8, max_delta_down);
       }
     }
   } else {
@@ -503,7 +511,8 @@ static int adjust_q_cbr(const AV1_COMP *cpi, int q, int active_worst_quality,
                          ? AOMMIN(8, AOMMAX(1, rc->q_1_frame / 16))
                          : AOMMIN(16, AOMMAX(1, rc->q_1_frame / 8));
   }
-
+  if (cpi->svc.number_temporal_layers > 1 && cpi->svc.temporal_layer_id == 0)
+    max_delta_up = AOMMIN(max_delta_up, 14);
   // If resolution changes or avg_frame_bandwidth significantly changed,
   // then set this flag to indicate change in target bits per macroblock.
   const int change_target_bits_mb =
@@ -515,7 +524,8 @@ static int adjust_q_cbr(const AV1_COMP *cpi, int q, int active_worst_quality,
       !change_target_bits_mb && !cpi->rc.rtc_external_ratectrl &&
       (!cpi->oxcf.rc_cfg.gf_cbr_boost_pct ||
        !(refresh_frame->alt_ref_frame || refresh_frame->golden_frame))) {
-    // Make sure q is between oscillating Qs to prevent resonance.
+    // If in the previous two frames we have seen both overshoot and undershoot
+    // clamp Q between the two.
     if (rc->rc_1_frame * rc->rc_2_frame == -1 &&
         rc->q_1_frame != rc->q_2_frame) {
       int qclamp = clamp(q, AOMMIN(rc->q_1_frame, rc->q_2_frame),
@@ -555,8 +565,7 @@ static int adjust_q_cbr(const AV1_COMP *cpi, int q, int active_worst_quality,
     // Limit the decrease in Q from previous frame.
     if (rc->q_1_frame - q > max_delta_down) q = rc->q_1_frame - max_delta_down;
     // Limit the increase in Q from previous frame.
-    else if (q - rc->q_1_frame > max_delta_up &&
-             cpi->oxcf.tune_cfg.content != AOM_CONTENT_SCREEN)
+    else if (q - rc->q_1_frame > max_delta_up)
       q = rc->q_1_frame + max_delta_up;
   }
   // For non-svc (single layer): if resolution has increased push q closer
@@ -564,7 +573,7 @@ static int adjust_q_cbr(const AV1_COMP *cpi, int q, int active_worst_quality,
   if (!cpi->ppi->use_svc && cm->prev_frame &&
       (width * height > 1.5 * cm->prev_frame->width * cm->prev_frame->height))
     q = (q + active_worst_quality) >> 1;
-  // For singler layer RPS: Bias Q based on distance of closest reference.
+  // For single layer RPS: Bias Q based on distance of closest reference.
   if (cpi->ppi->rtc_ref.bias_recovery_frame) {
     const int min_dist = av1_svc_get_min_ref_dist(cpi);
     q = q - AOMMIN(min_dist, 20);
@@ -1228,15 +1237,6 @@ static int rc_pick_q_and_bounds_no_stats_cbr(const AV1_COMP *cpi, int width,
       *top_index = q;
     else
       q = *top_index;
-  }
-
-  // Special case: we force the first few frames to use low q such that
-  // these frames are encoded at a high quality, which provides good
-  // references for following frames.
-  if (current_frame->frame_type != KEY_FRAME && !cpi->ppi->use_svc &&
-      current_frame->frame_number >= 10 && current_frame->frame_number <= 15) {
-    q = AOMMIN(p_rc->last_kf_qindex + 108, AOMMAX(5, q - 9));
-    q = AOMMIN(rc->worst_quality, AOMMAX(q, rc->best_quality));
   }
 
   assert(*top_index <= rc->worst_quality && *top_index >= rc->best_quality);

@@ -31,9 +31,7 @@
 #include "test/function_equivalence_test.h"
 
 using libaom_test::ACMRandom;
-using libaom_test::FunctionEquivalenceTest;
 using ::testing::Combine;
-using ::testing::Range;
 using ::testing::Values;
 using ::testing::ValuesIn;
 
@@ -133,8 +131,9 @@ void TemporalFilterTest::RunTest(int isRandom, int run_times,
                                  ColorFormat color_fmt) {
   aom_usec_timer ref_timer, test_timer;
   const BLOCK_SIZE block_size = TF_BLOCK_SIZE;
-  const int width = block_size_wide[block_size];
-  const int height = block_size_high[block_size];
+  static_assert(block_size == BLOCK_32X32, "");
+  const int width = 32;
+  const int height = 32;
   int num_planes = MAX_MB_PLANE;
   int subsampling_x = 0;
   int subsampling_y = 0;
@@ -175,7 +174,7 @@ void TemporalFilterTest::RunTest(int isRandom, int run_times,
     memset(accumulator_mod, 0, 1024 * 3 * sizeof(accumulator_mod[0]));
     memset(count_mod, 0, 1024 * 3 * sizeof(count_mod[0]));
 
-    assert(width == 32 && height == 32);
+    static_assert(width == 32 && height == 32, "");
     const MV subblock_mvs[4] = { { 0, 0 }, { 5, 5 }, { 7, 8 }, { 2, 10 } };
     const int subblock_mses[4] = { 15, 16, 17, 18 };
     const int q_factor = 12;
@@ -402,8 +401,9 @@ void HBDTemporalFilterTest::RunTest(int isRandom, int run_times, int BD,
                                     ColorFormat color_fmt) {
   aom_usec_timer ref_timer, test_timer;
   const BLOCK_SIZE block_size = TF_BLOCK_SIZE;
-  const int width = block_size_wide[block_size];
-  const int height = block_size_high[block_size];
+  static_assert(block_size == BLOCK_32X32, "");
+  const int width = 32;
+  const int height = 32;
   int num_planes = MAX_MB_PLANE;
   int subsampling_x = 0;
   int subsampling_y = 0;
@@ -444,7 +444,7 @@ void HBDTemporalFilterTest::RunTest(int isRandom, int run_times, int BD,
     memset(accumulator_mod, 0, 1024 * 3 * sizeof(accumulator_mod[0]));
     memset(count_mod, 0, 1024 * 3 * sizeof(count_mod[0]));
 
-    assert(width == 32 && height == 32);
+    static_assert(width == 32 && height == 32, "");
     const MV subblock_mvs[4] = { { 0, 0 }, { 5, 5 }, { 7, 8 }, { 2, 10 } };
     const int subblock_mses[4] = { 15, 16, 17, 18 };
     const int q_factor = 12;

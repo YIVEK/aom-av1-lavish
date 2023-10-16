@@ -100,7 +100,6 @@ void av1_row_mt_sync_read_dummy(AV1EncRowMultiThreadSync *row_mt_sync, int r,
   (void)row_mt_sync;
   (void)r;
   (void)c;
-  return;
 }
 
 void av1_row_mt_sync_write_dummy(AV1EncRowMultiThreadSync *row_mt_sync, int r,
@@ -109,7 +108,6 @@ void av1_row_mt_sync_write_dummy(AV1EncRowMultiThreadSync *row_mt_sync, int r,
   (void)r;
   (void)c;
   (void)cols;
-  return;
 }
 
 void av1_row_mt_sync_read(AV1EncRowMultiThreadSync *row_mt_sync, int r, int c) {
@@ -586,7 +584,7 @@ static int enc_row_mt_worker_hook(void *arg1, void *unused) {
     launch_loop_filter_rows(cm, thread_data, enc_row_mt, mib_size_log2);
   }
   av1_free_pc_tree_recursive(thread_data->td->rt_pc_root, av1_num_planes(cm), 0,
-                             0);
+                             0, cpi->sf.part_sf.partition_search_type);
   return 1;
 }
 
@@ -619,7 +617,7 @@ static int enc_worker_hook(void *arg1, void *unused) {
   }
 
   av1_free_pc_tree_recursive(thread_data->td->rt_pc_root, av1_num_planes(cm), 0,
-                             0);
+                             0, cpi->sf.part_sf.partition_search_type);
 
   return 1;
 }
@@ -1284,6 +1282,7 @@ static AOM_INLINE void accumulate_counters_enc_workers(AV1_COMP *cpi,
     // Accumulate rtc counters.
     if (!frame_is_intra_only(&cpi->common))
       av1_accumulate_rtc_counters(cpi, &thread_data->td->mb);
+    cpi->palette_pixel_num += thread_data->td->mb.palette_pixels;
     if (thread_data->td != &cpi->td) {
       // Keep these conditional expressions in sync with the corresponding ones
       // in prepare_enc_workers().
@@ -1386,6 +1385,8 @@ static AOM_INLINE void prepare_enc_workers(AV1_COMP *cpi, AVxWorkerHook hook,
 
     // Reset rtc counters.
     av1_init_rtc_counters(&thread_data->td->mb);
+
+    thread_data->td->mb.palette_pixels = 0;
 
     if (thread_data->td->counts != &cpi->counts) {
       memcpy(thread_data->td->counts, &cpi->counts, sizeof(cpi->counts));
@@ -1824,7 +1825,6 @@ void av1_tpl_row_mt_sync_read_dummy(AV1TplRowMultiThreadSync *tpl_mt_sync,
   (void)tpl_mt_sync;
   (void)r;
   (void)c;
-  return;
 }
 
 void av1_tpl_row_mt_sync_write_dummy(AV1TplRowMultiThreadSync *tpl_mt_sync,
@@ -1833,7 +1833,6 @@ void av1_tpl_row_mt_sync_write_dummy(AV1TplRowMultiThreadSync *tpl_mt_sync,
   (void)r;
   (void)c;
   (void)cols;
-  return;
 }
 
 void av1_tpl_row_mt_sync_read(AV1TplRowMultiThreadSync *tpl_row_mt_sync, int r,
@@ -2282,7 +2281,7 @@ static int gm_mt_worker_hook(void *arg1, void *unused) {
     // INVALID/TRANSLATION/IDENTITY, skip the evaluation of global motion w.r.t
     // the remaining ref frames in that direction.
     if (cpi->sf.gm_sf.prune_ref_frame_for_gm_search &&
-        cpi->common.global_motion[ref_buf_idx].wmtype != ROTZOOM)
+        cpi->common.global_motion[ref_buf_idx].wmtype <= TRANSLATION)
       job_info->early_exit[cur_dir] = 1;
 
 #if CONFIG_MULTITHREAD

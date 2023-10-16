@@ -2518,7 +2518,7 @@ typedef struct RTC_REF {
    */
   unsigned int buffer_time_index[REF_FRAMES];
   /*!
-   * Saptial layer id of the last frame that refreshed the buffer slot.
+   * Spatial layer id of the last frame that refreshed the buffer slot.
    */
   unsigned char buffer_spatial_layer[REF_FRAMES];
   /*!
@@ -3628,6 +3628,12 @@ typedef struct AV1_COMP {
    */
   double *sm_scaling_factor;
 #endif
+
+  /*!
+   * Number of pixels that choose palette mode for luma in the
+   * fast encoding pass in av1_determine_sc_tools_with_encoding().
+   */
+  int palette_pixel_num;
 } AV1_COMP;
 
 /*!

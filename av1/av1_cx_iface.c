@@ -651,6 +651,7 @@ static void reduce_ratio(aom_rational64_t *ratio) {
   ratio->den /= denom;
 }
 
+// Called by encoder_encode() only. Must not be called by encoder_init().
 static aom_codec_err_t update_error_state(
     aom_codec_alg_priv_t *ctx, const struct aom_internal_error_info *error) {
   const aom_codec_err_t res = error->error_code;
@@ -1134,9 +1135,9 @@ static void update_default_encoder_config(const cfg_options_t *cfg,
   extra_cfg->reduced_tx_type_set = cfg->reduced_tx_type_set;
 }
 
-static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
-                                          const aom_codec_enc_cfg_t *cfg,
-                                          struct av1_extracfg *extra_cfg) {
+static void set_encoder_config(AV1EncoderConfig *oxcf,
+                               const aom_codec_enc_cfg_t *cfg,
+                               struct av1_extracfg *extra_cfg) {
   if (cfg->encoder_cfg.init_by_cfg_file) {
     update_default_encoder_config(&cfg->encoder_cfg, extra_cfg);
   }
@@ -1228,16 +1229,6 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
     dec_model_cfg->decoder_model_info_present_flag = 0;
     dec_model_cfg->display_model_info_present_flag = 1;
   } else if (extra_cfg->timing_info_type == AOM_TIMING_DEC_MODEL) {
-    //    if( extra_cfg->arnr_strength > 0 )
-    //    {
-    //      printf("Only --arnr-strength=0 can currently be used with
-    //      --timing-info=model."); return AOM_CODEC_INVALID_PARAM;
-    //    }
-    //    if( extra_cfg->enable_superres)
-    //    {
-    //      printf("Only --superres-mode=0 can currently be used with
-    //      --timing-info=model."); return AOM_CODEC_INVALID_PARAM;
-    //    }
     dec_model_cfg->num_units_in_decoding_tick = cfg->g_timebase.num;
     dec_model_cfg->timing_info.equal_picture_interval = 0;
     dec_model_cfg->decoder_model_info_present_flag = 1;
@@ -1302,8 +1293,19 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
   tool_cfg->enable_interintra_comp = extra_cfg->enable_interintra_comp;
   tool_cfg->ref_frame_mvs_present =
       extra_cfg->enable_ref_frame_mvs & extra_cfg->enable_order_hint;
-  tool_cfg->enable_global_motion =
-      extra_cfg->enable_global_motion && (cfg->g_usage != AOM_USAGE_REALTIME);
+
+  // Explicitly disable global motion in a few cases:
+  // * For realtime mode, we never search global motion, and disabling
+  //   it here prevents later code from allocating buffers we don't need
+  // * For large scale tile mode, some of the intended use cases expect
+  //   all frame headers to be identical. This breaks if global motion is
+  //   used, since global motion data is stored in the frame header.
+  //   eg, see test/lightfield_test.sh, which checks that all frame headers
+  //   are the same.
+  tool_cfg->enable_global_motion = extra_cfg->enable_global_motion &&
+                                   cfg->g_usage != AOM_USAGE_REALTIME &&
+                                   !cfg->large_scale_tile;
+
   tool_cfg->error_resilient_mode =
       cfg->g_error_resilient | extra_cfg->error_resilient_mode;
   tool_cfg->frame_parallel_decoding_mode =
@@ -1682,8 +1684,6 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
   oxcf->sb_qp_sweep = extra_cfg->sb_qp_sweep;
 
   oxcf->global_motion_method = extra_cfg->global_motion_method;
-
-  return AOM_CODEC_OK;
 }
 
 AV1EncoderConfig av1_get_encoder_config(const aom_codec_enc_cfg_t *cfg) {
@@ -1782,7 +1782,7 @@ static aom_codec_err_t ctrl_get_baseline_gf_interval(aom_codec_alg_priv_t *ctx,
 }
 
 static aom_codec_err_t update_extra_cfg(aom_codec_alg_priv_t *ctx,
-                                        struct av1_extracfg *extra_cfg) {
+                                        const struct av1_extracfg *extra_cfg) {
   const aom_codec_err_t res = validate_config(ctx, &ctx->cfg, extra_cfg);
   if (res == AOM_CODEC_OK) {
     ctx->extra_cfg = *extra_cfg;
@@ -1852,22 +1852,28 @@ static aom_codec_err_t ctrl_set_static_thresh(aom_codec_alg_priv_t *ctx,
 
 static aom_codec_err_t ctrl_set_row_mt(aom_codec_alg_priv_t *ctx,
                                        va_list args) {
+  unsigned int row_mt = CAST(AV1E_SET_ROW_MT, args);
+  if (row_mt == ctx->extra_cfg.row_mt) return AOM_CODEC_OK;
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.row_mt = CAST(AV1E_SET_ROW_MT, args);
+  extra_cfg.row_mt = row_mt;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
 static aom_codec_err_t ctrl_set_tile_columns(aom_codec_alg_priv_t *ctx,
                                              va_list args) {
+  unsigned int tile_columns = CAST(AV1E_SET_TILE_COLUMNS, args);
+  if (tile_columns == ctx->extra_cfg.tile_columns) return AOM_CODEC_OK;
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.tile_columns = CAST(AV1E_SET_TILE_COLUMNS, args);
+  extra_cfg.tile_columns = tile_columns;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
 static aom_codec_err_t ctrl_set_tile_rows(aom_codec_alg_priv_t *ctx,
                                           va_list args) {
+  unsigned int tile_rows = CAST(AV1E_SET_TILE_ROWS, args);
+  if (tile_rows == ctx->extra_cfg.tile_rows) return AOM_CODEC_OK;
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.tile_rows = CAST(AV1E_SET_TILE_ROWS, args);
+  extra_cfg.tile_rows = tile_rows;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -3183,12 +3189,6 @@ static aom_codec_err_t encoder_encode(aom_codec_alg_priv_t *ctx,
   if (res == AOM_CODEC_OK) {
     AV1_COMP *cpi = ppi->cpi;
 
-    const int num_layers =
-        cpi->svc.number_spatial_layers * cpi->svc.number_temporal_layers;
-    if (num_layers > 1 && !av1_alloc_layer_context(cpi, num_layers)) {
-      return AOM_CODEC_MEM_ERROR;
-    }
-
     // Set up internal flags
     if (ctx->base.init_flags & AOM_CODEC_USE_PSNR) ppi->b_calculate_psnr = 1;
 
@@ -3221,7 +3221,7 @@ static aom_codec_err_t encoder_encode(aom_codec_alg_priv_t *ctx,
         AV1EncoderConfig *oxcf = &cpi->oxcf;
         const BLOCK_SIZE sb_size = av1_select_sb_size(
             oxcf, oxcf->frm_dim_cfg.width, oxcf->frm_dim_cfg.height,
-            cpi->svc.number_spatial_layers);
+            ppi->number_spatial_layers);
         oxcf->border_in_pixels =
             av1_get_enc_border_size(av1_is_resize_needed(oxcf),
                                     oxcf->kf_cfg.key_freq_max == 0, sb_size);

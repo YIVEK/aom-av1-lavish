@@ -25,24 +25,6 @@
 #include "av1/common/filter.h"
 #include "av1/common/reconinter.h"
 
-uint32_t aom_get4x4sse_cs_c(const uint8_t *a, int a_stride, const uint8_t *b,
-                            int b_stride) {
-  int distortion = 0;
-  int r, c;
-
-  for (r = 0; r < 4; ++r) {
-    for (c = 0; c < 4; ++c) {
-      int diff = a[c] - b[c];
-      distortion += diff * diff;
-    }
-
-    a += a_stride;
-    b += b_stride;
-  }
-
-  return distortion;
-}
-
 uint32_t aom_get_mb_ss_c(const int16_t *a) {
   unsigned int i, sum = 0;
 
@@ -281,9 +263,6 @@ VARIANCES(8, 8)
 VARIANCES(8, 4)
 VARIANCES(4, 8)
 VARIANCES(4, 4)
-VARIANCES(4, 2)
-VARIANCES(2, 4)
-VARIANCES(2, 2)
 
 // Realtime mode doesn't use rectangular blocks.
 #if !CONFIG_REALTIME_ONLY
@@ -706,9 +685,6 @@ HIGHBD_VARIANCES(8, 8)
 HIGHBD_VARIANCES(8, 4)
 HIGHBD_VARIANCES(4, 8)
 HIGHBD_VARIANCES(4, 4)
-HIGHBD_VARIANCES(4, 2)
-HIGHBD_VARIANCES(2, 4)
-HIGHBD_VARIANCES(2, 2)
 
 // Realtime mode doesn't use 4x rectangular blocks.
 #if !CONFIG_REALTIME_ONLY
