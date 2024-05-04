@@ -41,6 +41,13 @@ if(NOT EMSCRIPTEN)
   endif()
 endif()
 
+if(MSVC AND MSVC_VERSION LESS 1920)
+  message(
+    WARNING
+      "MSVC versions prior to 2019 (v16) are not supported and may generate"
+      " incorrect code!")
+endif()
+
 # Library version info. Update LT_CURRENT, LT_REVISION and LT_AGE when making a
 # public release by following the guidelines in the libtool document:
 # https://www.gnu.org/software/libtool/manual/libtool.html#Updating-version-info
@@ -51,9 +58,9 @@ endif()
 # passed to libtool.
 #
 # We set SO_FILE_VERSION = [c-a].a.r
-set(LT_CURRENT 7)
+set(LT_CURRENT 9)
 set(LT_REVISION 0)
-set(LT_AGE 4)
+set(LT_AGE 6)
 math(EXPR SO_VERSION "${LT_CURRENT} - ${LT_AGE}")
 set(SO_FILE_VERSION "${SO_VERSION}.${LT_AGE}.${LT_REVISION}")
 unset(LT_CURRENT)
@@ -210,10 +217,6 @@ list(APPEND AOM_WEBM_ENCODER_SOURCES "${AOM_ROOT}/common/webmenc.cc"
 include_directories(${AOM_ROOT} ${AOM_CONFIG_DIR} ${AOM_ROOT}/apps
                     ${AOM_ROOT}/common ${AOM_ROOT}/examples ${AOM_ROOT}/stats)
 
-if(CONFIG_RUNTIME_CPU_DETECT AND ANDROID_NDK)
-  include_directories(${ANDROID_NDK}/sources/android/cpufeatures)
-endif()
-
 # Targets
 add_library(aom_version ${AOM_VERSION_SOURCES})
 add_dummy_source_file_to_target(aom_version c)
@@ -304,7 +307,7 @@ if(NOT MSVC AND NOT APPLE)
   endif()
 endif()
 
-if(CONFIG_AV1_RC_RTC AND CONFIG_AV1_ENCODER AND NOT BUILD_SHARED_LIBS)
+if(CONFIG_AV1_ENCODER AND NOT CONFIG_REALTIME_ONLY AND NOT BUILD_SHARED_LIBS)
   list(APPEND AOM_AV1_RC_SOURCES "${AOM_ROOT}/av1/ratectrl_rtc.h"
               "${AOM_ROOT}/av1/ratectrl_rtc.cc")
   add_library(aom_av1_rc ${AOM_AV1_RC_SOURCES})
@@ -312,32 +315,13 @@ if(CONFIG_AV1_RC_RTC AND CONFIG_AV1_ENCODER AND NOT BUILD_SHARED_LIBS)
   if(NOT MSVC AND NOT APPLE)
     target_link_libraries(aom_av1_rc ${AOM_LIB_LINK_TYPE} m)
   endif()
-endif()
-
-if(CONFIG_AV1_ENCODER AND NOT CONFIG_REALTIME_ONLY AND NOT BUILD_SHARED_LIBS)
-  list(
-    APPEND AOM_AV1_RC_QMODE_SOURCES "${AOM_ROOT}/av1/ratectrl_qmode_interface.h"
-           "${AOM_ROOT}/av1/ratectrl_qmode_interface.cc"
-           "${AOM_ROOT}/av1/reference_manager.h"
-           "${AOM_ROOT}/av1/reference_manager.cc"
-           "${AOM_ROOT}/av1/ratectrl_qmode.h"
-           "${AOM_ROOT}/av1/ratectrl_qmode.cc" "${AOM_ROOT}/av1/ducky_encode.h"
-           "${AOM_ROOT}/av1/ducky_encode.cc")
-  add_library(av1_rc_qmode OBJECT ${AOM_AV1_RC_QMODE_SOURCES})
-  target_link_libraries(av1_rc_qmode ${AOM_LIB_LINK_TYPE} aom)
-  if(NOT MSVC AND NOT APPLE)
-    target_link_libraries(av1_rc_qmode ${AOM_LIB_LINK_TYPE} m)
-  endif()
-  set_target_properties(av1_rc_qmode PROPERTIES LINKER_LANGUAGE CXX)
+  set_target_properties(aom_av1_rc PROPERTIES LINKER_LANGUAGE CXX)
 endif()
 
 # List of object and static library targets.
 set(AOM_LIB_TARGETS ${AOM_LIB_TARGETS} aom_rtcd aom_mem aom_scale aom)
-if(CONFIG_AV1_RC_RTC AND CONFIG_AV1_ENCODER AND NOT BUILD_SHARED_LIBS)
-  set(AOM_LIB_TARGETS ${AOM_LIB_TARGETS} aom_av1_rc)
-endif()
 if(CONFIG_AV1_ENCODER AND NOT CONFIG_REALTIME_ONLY AND NOT BUILD_SHARED_LIBS)
-  set(AOM_LIB_TARGETS ${AOM_LIB_TARGETS} av1_rc_qmode)
+  set(AOM_LIB_TARGETS ${AOM_LIB_TARGETS} aom_av1_rc)
 endif()
 if(BUILD_SHARED_LIBS)
   set(AOM_LIB_TARGETS ${AOM_LIB_TARGETS} aom_static)

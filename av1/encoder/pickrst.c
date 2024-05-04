@@ -155,7 +155,7 @@ typedef struct {
   // tile in the frame.
   SgrprojInfo sgrproj;
   WienerInfo wiener;
-  AV1PixelRect tile_rect;
+  PixelRect tile_rect;
 } RestSearchCtxt;
 
 static AOM_INLINE void rsc_on_tile(void *priv) {
@@ -198,7 +198,7 @@ static AOM_INLINE void init_rsc(const YV12_BUFFER_CONFIG *src,
 
 static int64_t try_restoration_unit(const RestSearchCtxt *rsc,
                                     const RestorationTileLimits *limits,
-                                    const AV1PixelRect *tile_rect,
+                                    const PixelRect *tile_rect,
                                     const RestorationUnitInfo *rui) {
   const AV1_COMMON *const cm = rsc->cm;
   const int plane = rsc->plane;
@@ -880,9 +880,8 @@ static int count_sgrproj_bits(SgrprojInfo *sgrproj_info,
 }
 
 static AOM_INLINE void search_sgrproj(const RestorationTileLimits *limits,
-                                      const AV1PixelRect *tile,
-                                      int rest_unit_idx, void *priv,
-                                      int32_t *tmpbuf,
+                                      const PixelRect *tile, int rest_unit_idx,
+                                      void *priv, int32_t *tmpbuf,
                                       RestorationLineBuffers *rlbs) {
   (void)rlbs;
   RestSearchCtxt *rsc = (RestSearchCtxt *)priv;
@@ -946,10 +945,11 @@ static AOM_INLINE void search_sgrproj(const RestorationTileLimits *limits,
   if (cost_sgr < cost_none) rsc->sgrproj = rusi->sgrproj;
 }
 
-void acc_stat_one_line(const uint8_t *dgd, const uint8_t *src, int dgd_stride,
-                       int h_start, int h_end, uint8_t avg,
-                       const int wiener_halfwin, const int wiener_win2,
-                       int32_t *M_int32, int32_t *H_int32, int count) {
+static void acc_stat_one_line(const uint8_t *dgd, const uint8_t *src,
+                              int dgd_stride, int h_start, int h_end,
+                              uint8_t avg, const int wiener_halfwin,
+                              const int wiener_win2, int32_t *M_int32,
+                              int32_t *H_int32, int count) {
   int j, k, l;
   int16_t Y[WIENER_WIN2];
 
@@ -1112,7 +1112,7 @@ static int linsolve_wiener(int n, int64_t *A, int stride, int64_t *b,
       for (int j = 0; j < n; j++) {
         A[(i + 1) * stride + j] -= c / 256 * A[k * stride + j] / cd * 256;
       }
-      b[i + 1] -= c * b[k] / cd;
+      b[i + 1] -= c / 256 * b[k] / cd * 256;
     }
   }
   // Back-substitution
@@ -1149,8 +1149,8 @@ static AOM_INLINE void update_a_sep_sym(int wiener_win, int64_t **Mc,
     for (j = 0; j < wiener_win; j++) {
       int k, l;
       for (k = 0; k < wiener_win; ++k) {
+        const int kk = wrap_index(k, wiener_win);
         for (l = 0; l < wiener_win; ++l) {
-          const int kk = wrap_index(k, wiener_win);
           const int ll = wrap_index(l, wiener_win);
           B[ll * wiener_halfwin1 + kk] +=
               Hc[j * wiener_win + i][k * wiener_win2 + l] * b[i] /
@@ -1205,16 +1205,43 @@ static AOM_INLINE void update_b_sep_sym(int wiener_win, int64_t **Mc,
     }
   }
 
+  // b/272139363: The computation,
+  //   Hc[i * wiener_win + j][k * wiener_win2 + l] * a[k] /
+  //          WIENER_TAP_SCALE_FACTOR * a[l] / WIENER_TAP_SCALE_FACTOR;
+  // may generate a signed-integer-overflow. Conditionally scale the terms to
+  // avoid a potential overflow.
+  //
+  // Hc contains accumulated correlation statistics and it is desired to leave
+  // as much room as possible for Hc. It was experimentally observed that the
+  // primary issue manifests itself with the second, a[l], multiply. For
+  // max_a_l < WIENER_TAP_SCALE_FACTOR the first multiply with a[k] should not
+  // increase dynamic range and the second multiply should hence be safe.
+  // Thereafter a safe scale_threshold depends on the actual operational range
+  // of Hc. The largest scale_threshold is expected to depend on bit-depth
+  // (av1_compute_stats_highbd_c() scales highbd to 8-bit) and maximum
+  // restoration-unit size (256), leading up to 32-bit positive numbers in Hc.
+  // Noting that the caller, wiener_decompose_sep_sym(), initializes a[...]
+  // to a range smaller than 16 bits, the scale_threshold is set as below for
+  // convenience.
+  int32_t max_a_l = 0;
+  for (int l = 0; l < wiener_win; ++l) {
+    const int32_t abs_a_l = abs(a[l]);
+    if (abs_a_l > max_a_l) max_a_l = abs_a_l;
+  }
+  const int scale_threshold = 128 * WIENER_TAP_SCALE_FACTOR;
+  const int scaler = max_a_l < scale_threshold ? 1 : 4;
+
   for (i = 0; i < wiener_win; i++) {
+    const int ii = wrap_index(i, wiener_win);
     for (j = 0; j < wiener_win; j++) {
-      const int ii = wrap_index(i, wiener_win);
       const int jj = wrap_index(j, wiener_win);
       int k, l;
       for (k = 0; k < wiener_win; ++k) {
         for (l = 0; l < wiener_win; ++l) {
           B[jj * wiener_halfwin1 + ii] +=
               Hc[i * wiener_win + j][k * wiener_win2 + l] * a[k] /
-              WIENER_TAP_SCALE_FACTOR * a[l] / WIENER_TAP_SCALE_FACTOR;
+              (scaler * WIENER_TAP_SCALE_FACTOR) * a[l] /
+              (WIENER_TAP_SCALE_FACTOR / scaler);
         }
       }
     }
@@ -1396,7 +1423,7 @@ static int count_wiener_bits(int wiener_win, WienerInfo *wiener_info,
 #define USE_WIENER_REFINEMENT_SEARCH 1
 static int64_t finer_tile_search_wiener(const RestSearchCtxt *rsc,
                                         const RestorationTileLimits *limits,
-                                        const AV1PixelRect *tile,
+                                        const PixelRect *tile,
                                         RestorationUnitInfo *rui,
                                         int wiener_win) {
   const int plane_off = (WIENER_WIN - wiener_win) >> 1;
@@ -1502,7 +1529,7 @@ static int64_t finer_tile_search_wiener(const RestSearchCtxt *rsc,
 }
 
 static AOM_INLINE void search_wiener(const RestorationTileLimits *limits,
-                                     const AV1PixelRect *tile_rect,
+                                     const PixelRect *tile_rect,
                                      int rest_unit_idx, void *priv,
                                      int32_t *tmpbuf,
                                      RestorationLineBuffers *rlbs) {
@@ -1637,7 +1664,7 @@ static AOM_INLINE void search_wiener(const RestorationTileLimits *limits,
 }
 
 static AOM_INLINE void search_norestore(const RestorationTileLimits *limits,
-                                        const AV1PixelRect *tile_rect,
+                                        const PixelRect *tile_rect,
                                         int rest_unit_idx, void *priv,
                                         int32_t *tmpbuf,
                                         RestorationLineBuffers *rlbs) {
@@ -1656,7 +1683,7 @@ static AOM_INLINE void search_norestore(const RestorationTileLimits *limits,
 }
 
 static AOM_INLINE void search_switchable(const RestorationTileLimits *limits,
-                                         const AV1PixelRect *tile_rect,
+                                         const PixelRect *tile_rect,
                                          int rest_unit_idx, void *priv,
                                          int32_t *tmpbuf,
                                          RestorationLineBuffers *rlbs) {

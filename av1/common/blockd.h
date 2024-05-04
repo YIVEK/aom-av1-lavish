@@ -322,11 +322,9 @@ typedef struct MB_MODE_INFO {
   uint8_t compound_idx : 1;
   /*! \brief Whether to use interintra wedge */
   uint8_t use_wedge_interintra : 1;
-  /**@}*/
-
-  /****************************************************************************/
   /*! \brief CDEF strength per BLOCK_64X64 */
-  int8_t cdef_strength;
+  int8_t cdef_strength : 4;
+  /**@}*/
 
 #if CONFIG_RD_DEBUG
   /*! \brief RD info used for debugging */
@@ -422,16 +420,12 @@ PREDICTION_MODE av1_above_block_mode(const MB_MODE_INFO *above_mi);
 
 static INLINE int is_global_mv_block(const MB_MODE_INFO *const mbmi,
                                      TransformationType type) {
-  // As global mv is disabled in rt, return from the function before reading
-  // 'mbmi->bsize'. This prevents data race condition in multi-threaded
-  // realtime encoding as mbmi->bsize is updated in the function
-  // direct_partition_merging().
-  if (type <= TRANSLATION) return 0;
   const PREDICTION_MODE mode = mbmi->mode;
   const BLOCK_SIZE bsize = mbmi->bsize;
   const int block_size_allowed =
       AOMMIN(block_size_wide[bsize], block_size_high[bsize]) >= 8;
-  return (mode == GLOBALMV || mode == GLOBAL_GLOBALMV) && block_size_allowed;
+  return (mode == GLOBALMV || mode == GLOBAL_GLOBALMV) && type > TRANSLATION &&
+         block_size_allowed;
 }
 
 #if CONFIG_MISMATCH_DEBUG
@@ -524,11 +518,6 @@ typedef struct {
 
 /*!\cond */
 
-#if CONFIG_DEBUG
-#define CFL_SUB8X8_VAL_MI_SIZE (4)
-#define CFL_SUB8X8_VAL_MI_SQUARE \
-  (CFL_SUB8X8_VAL_MI_SIZE * CFL_SUB8X8_VAL_MI_SIZE)
-#endif  // CONFIG_DEBUG
 #define CFL_MAX_BLOCK_SIZE (BLOCK_32X32)
 #define CFL_BUF_LINE (32)
 #define CFL_BUF_LINE_I128 (CFL_BUF_LINE >> 3)
@@ -543,9 +532,10 @@ typedef struct cfl_ctx {
 
   // Cache the DC_PRED when performing RDO, so it does not have to be recomputed
   // for every scaling parameter
-  int dc_pred_is_cached[CFL_PRED_PLANES];
-  // The DC_PRED cache is disable when decoding
-  int use_dc_pred_cache;
+  bool dc_pred_is_cached[CFL_PRED_PLANES];
+  // Whether the DC_PRED cache is enabled. The DC_PRED cache is disabled when
+  // decoding.
+  bool use_dc_pred_cache;
   // Only cache the first row of the DC_PRED
   int16_t dc_pred_cache[CFL_PRED_PLANES][CFL_BUF_LINE];
 
@@ -1199,7 +1189,7 @@ static INLINE BLOCK_SIZE get_plane_block_size(BLOCK_SIZE bsize,
   assert(bsize < BLOCK_SIZES_ALL);
   assert(subsampling_x >= 0 && subsampling_x < 2);
   assert(subsampling_y >= 0 && subsampling_y < 2);
-  return ss_size_lookup[bsize][subsampling_x][subsampling_y];
+  return av1_ss_size_lookup[bsize][subsampling_x][subsampling_y];
 }
 
 /*

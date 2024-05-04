@@ -1016,11 +1016,9 @@ static TARGET_LEVEL_FAIL_ID check_level_constraints(
       break;
     }
 
-    const int max_tile_size =
-        ((level >= SEQ_LEVEL_7_0 && level <= SEQ_LEVEL_8_3) ||
-         level == SEQ_LEVEL_MAX)
-            ? MAX_TILE_AREA_LEVEL_7_AND_ABOVE
-            : MAX_TILE_AREA;
+    const int max_tile_size = (level >= SEQ_LEVEL_7_0 && level <= SEQ_LEVEL_8_3)
+                                  ? MAX_TILE_AREA_LEVEL_7_AND_ABOVE
+                                  : MAX_TILE_AREA;
     if (level_stats->max_tile_size > max_tile_size) {
       fail_id = TILE_TOO_LARGE;
       break;
@@ -1230,7 +1228,8 @@ static void scan_past_frames(const FrameWindowBuffer *const buffer,
       AOMMAX(level_spec->max_decode_rate, decoded_samples);
   level_spec->max_tile_rate = AOMMAX(level_spec->max_tile_rate, tiles);
   level_stats->max_bitrate =
-      AOMMAX(level_stats->max_bitrate, (int)encoded_size_in_bytes * 8);
+      AOMMAX(level_stats->max_bitrate,
+             (int)AOMMIN(encoded_size_in_bytes * 8, (size_t)INT_MAX));
 }
 
 void av1_update_level_info(AV1_COMP *cpi, size_t size, int64_t ts_start,

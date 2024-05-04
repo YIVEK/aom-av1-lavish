@@ -10,20 +10,19 @@
  */
 
 #include <assert.h>
-#include <jxl/butteraugli.h>
-#include <jxl/thread_parallel_runner.h>
 
 #include "aom_dsp/butteraugli.h"
 #include "aom_mem/aom_mem.h"
 #include "aom_ports/mem.h"
+#include "av1/encoder/encoder_utils.h"
 #include "third_party/libyuv/include/libyuv/convert_argb.h"
 
-int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
+int aom_calc_butteraugli(AV1_COMP *cpi, const YV12_BUFFER_CONFIG *source,
                          const YV12_BUFFER_CONFIG *distorted, int bit_depth,
                          aom_matrix_coefficients_t matrix_coefficients,
                          aom_color_range_t color_range, float *dist_map, int target_intensity, int hf_asymmetry) {
   (void)bit_depth;
-  assert(bit_depth <= 10);
+  assert(bit_depth <= 12);
   const int width = source->y_crop_width;
   const int height = source->y_crop_height;
   const int ss_x = source->subsampling_x;
@@ -31,10 +30,10 @@ int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
 
   const struct YuvConstants *yuv_constants;
   if (matrix_coefficients == AOM_CICP_MC_BT_709) {
-    if (color_range == AOM_CR_FULL_RANGE) return 0;
-    yuv_constants = &kYuvH709Constants;
+    yuv_constants = color_range == AOM_CR_FULL_RANGE ? &kYuvF709Constants
+                                                     : &kYuvH709Constants;
   } else if (matrix_coefficients == AOM_CICP_MC_BT_2020_NCL || matrix_coefficients == AOM_CICP_MC_BT_2020_CL) {
-    yuv_constants = color_range == AOM_CR_FULL_RANGE ? &kYuvV2020Constants : &kYuv2020Constants;
+    yuv_constants = color_range == AOM_CR_FULL_RANGE ? &kYuvV2020Constants : &kYuv2020Constants; // Implement bt.2020 full later
   } else {
     yuv_constants = color_range == AOM_CR_FULL_RANGE ? &kYuvJPEGConstants
                                                      : &kYuvI601Constants;
@@ -44,9 +43,13 @@ int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
   const size_t buffer_size = height * stride_argb * (bit_depth > 8 ? 2 : 1);
   uint8_t *src_argb = (uint8_t *)aom_malloc(buffer_size);
   uint8_t *distorted_argb = (uint8_t *)aom_malloc(buffer_size);
+  uint8_t *src_rgba = (uint8_t *)aom_malloc(buffer_size);
+  uint8_t *distorted_rgba = (uint8_t *)aom_malloc(buffer_size);
   if (!src_argb || !distorted_argb) {
     aom_free(src_argb);
     aom_free(distorted_argb);
+    aom_free(src_rgba);
+    aom_free(distorted_rgba);
     return 0;
   }
 
@@ -69,6 +72,9 @@ int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
                       CONVERT_TO_SHORTPTR(distorted->u_buffer), distorted->uv_stride,
                       CONVERT_TO_SHORTPTR(distorted->v_buffer), distorted->uv_stride,
                       distorted_argb, stride_argb, yuv_constants, width, height);
+
+      BGRAToARGB(src_argb, stride_argb, src_rgba, stride_argb, width, height);
+      BGRAToARGB(distorted_argb, stride_argb, distorted_rgba, stride_argb, width, height);
     }
   } else if (ss_x == 1 && ss_y == 0) {
     if (bit_depth == 8) {
@@ -111,12 +117,15 @@ int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
   } else {
     aom_free(src_argb);
     aom_free(distorted_argb);
+    aom_free(src_rgba);
+    aom_free(distorted_rgba);
     return 0;
   }
   float hf_asym_val = (float)hf_asymmetry / 10.0f;
   JxlPixelFormat pixel_format = { 4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0 };
-  if (bit_depth == 10) {
+  if (bit_depth == 10 || bit_depth == 12) {
     pixel_format.data_type = JXL_TYPE_UINT16;
+    //pixel_format.endianness = JXL_BIG_ENDIAN;
   }
   JxlButteraugliApi *api = JxlButteraugliApiCreate(NULL);
   JxlParallelRunner runner = JxlThreadParallelRunnerCreate(NULL, 6);
@@ -125,18 +134,22 @@ int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
   JxlButteraugliApiSetIntensityTarget(api, (float)target_intensity);
 
   JxlButteraugliResult *result = JxlButteraugliCompute(
-      api, width, height, &pixel_format, src_argb, buffer_size, &pixel_format,
-      distorted_argb, buffer_size);
+      api, width, height, &pixel_format, src_rgba, buffer_size, &pixel_format,
+      distorted_rgba, buffer_size);
 
   const float *distmap = NULL;
   uint32_t row_stride;
   JxlButteraugliResultGetDistmap(result, &distmap, &row_stride);
+  cpi->butteraugli_info.distance = JxlButteraugliResultGetDistance(result, 1.0f);
+  printf("distance: %f, bit_depth: %d, row_stride: %d\n", cpi->butteraugli_info.distance, bit_depth, row_stride);
   if (distmap == NULL) {
     JxlButteraugliApiDestroy(api);
     JxlButteraugliResultDestroy(result);
     JxlThreadParallelRunnerDestroy(runner);
     aom_free(src_argb);
     aom_free(distorted_argb);
+    aom_free(src_rgba);
+    aom_free(distorted_rgba);
     return 0;
   }
 
@@ -151,5 +164,7 @@ int aom_calc_butteraugli(const YV12_BUFFER_CONFIG *source,
   JxlThreadParallelRunnerDestroy(runner);
   aom_free(src_argb);
   aom_free(distorted_argb);
+  aom_free(src_rgba);
+  aom_free(distorted_rgba);
   return 1;
 }

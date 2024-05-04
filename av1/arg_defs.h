@@ -21,6 +21,7 @@ extern "C" {
 #include "common/webmenc.h"
 #endif
 #include "aom/aomcx.h"
+#include "aom_dsp/flow_estimation/flow_estimation.h"
 
 enum TestDecodeFatality {
   TEST_DECODE_OFF,
@@ -186,6 +187,8 @@ typedef struct av1_codec_arg_definitions {
   arg_def_t vmaf_model_path;
 #endif
   arg_def_t partition_info_path;
+  arg_def_t enable_rate_guide_deltaq;
+  arg_def_t rate_distribution_info;
   arg_def_t film_grain_test;
   arg_def_t film_grain_table;
 #if CONFIG_DENOISE
@@ -251,7 +254,11 @@ typedef struct av1_codec_arg_definitions {
   arg_def_t butteraugli_intensity_target;
   arg_def_t butteraugli_hf_asymmetry;
   arg_def_t butteraugli_rd_mult;
+  arg_def_t butteraugli_quant_mult;
+  arg_def_t butteraugli_loop_count;
   arg_def_t butteraugli_resize_factor;
+  arg_def_t butteraugli_quant_mult_pos;
+  arg_def_t butteraugli_quant_mult_neg;
 #endif
   arg_def_t loopfilter_sharpness;
   arg_def_t enable_experimental_psy;
@@ -259,7 +266,12 @@ typedef struct av1_codec_arg_definitions {
   arg_def_t vmaf_resize_factor;
   arg_def_t vmaf_rd_mult;
 #endif
-  arg_def_t tpl_rd_mult;
+  arg_def_t tpl_strength;
+  arg_def_t luma_bias_strength;
+  arg_def_t luma_bias_midpoint;
+  arg_def_t invert_luma_bias;
+  arg_def_t sb_qp_sweep;
+  arg_def_t global_motion_method;
 #endif  // CONFIG_AV1_ENCODER
 } av1_codec_arg_definitions_t;
 

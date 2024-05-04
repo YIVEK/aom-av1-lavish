@@ -234,6 +234,8 @@ static const int av1_arg_ctrl_map[] = { AOME_SET_CPUUSED,
 #endif
                                         AV1E_SET_DV_COST_UPD_FREQ,
                                         AV1E_SET_PARTITION_INFO_PATH,
+                                        AV1E_ENABLE_RATE_GUIDE_DELTAQ,
+                                        AV1E_SET_RATE_DISTRIBUTION_INFO,
                                         AV1E_SET_ENABLE_DIRECTIONAL_INTRA,
                                         AV1E_SET_ENABLE_TX_SIZE_SEARCH,
                                         AV1E_SET_LOOPFILTER_CONTROL,
@@ -256,7 +258,11 @@ static const int av1_arg_ctrl_map[] = { AOME_SET_CPUUSED,
                                         AOME_SET_BUTTERAUGLI_INTENSITY_TARGET,
                                         AOME_SET_BUTTERAUGLI_HF_ASYMMETRY,
                                         AOME_SET_BUTTERAUGLI_RD_MULT,
+                                        AOME_SET_BUTTERAUGLI_QUANT_MULT,
+                                        AOME_SET_BUTTERAUGLI_LOOP_COUNT,
                                         AOME_SET_BUTTERAUGLI_RESIZE_FACTOR,
+                                        AOME_SET_BUTTERAUGLI_QUANT_MULT_POS,
+                                        AOME_SET_BUTTERAUGLI_QUANT_MULT_NEG,
 #endif
                                         AOME_SET_LOOPFILTER_SHARPNESS,
                                         AOME_SET_ENABLE_EXPERIMENTAL_PSY,
@@ -264,7 +270,11 @@ static const int av1_arg_ctrl_map[] = { AOME_SET_CPUUSED,
                                         AOME_SET_VMAF_RESIZE_FACTOR,
                                         AOME_SET_VMAF_RD_MULT,
 #endif
-                                        AOME_SET_TPL_RD_MULT,
+                                        AOME_SET_TPL_STRENGTH,
+                                        AOME_SET_LUMA_BIAS_STRENGTH,
+                                        AOME_SET_LUMA_BIAS_MIDPOINT,
+                                        AOME_SET_INVERT_LUMA_BIAS,
+                                        AOME_SET_LUMA_BIAS_OVERRIDE,
                                         0 };
 
 const arg_def_t *main_args[] = { &g_av1_codec_arg_defs.help,
@@ -466,6 +476,8 @@ const arg_def_t *av1_ctrl_args[] = {
 #endif
   &g_av1_codec_arg_defs.dv_cost_upd_freq,
   &g_av1_codec_arg_defs.partition_info_path,
+  &g_av1_codec_arg_defs.enable_rate_guide_deltaq,
+  &g_av1_codec_arg_defs.rate_distribution_info,
   &g_av1_codec_arg_defs.enable_directional_intra,
   &g_av1_codec_arg_defs.enable_tx_size_search,
   &g_av1_codec_arg_defs.loopfilter_control,
@@ -488,7 +500,11 @@ const arg_def_t *av1_ctrl_args[] = {
   &g_av1_codec_arg_defs.butteraugli_intensity_target,
   &g_av1_codec_arg_defs.butteraugli_hf_asymmetry,
   &g_av1_codec_arg_defs.butteraugli_rd_mult,
+  &g_av1_codec_arg_defs.butteraugli_quant_mult,
+  &g_av1_codec_arg_defs.butteraugli_loop_count,
   &g_av1_codec_arg_defs.butteraugli_resize_factor,
+  &g_av1_codec_arg_defs.butteraugli_quant_mult_pos,
+  &g_av1_codec_arg_defs.butteraugli_quant_mult_neg,
 #endif
   &g_av1_codec_arg_defs.loopfilter_sharpness,
   &g_av1_codec_arg_defs.enable_experimental_psy,
@@ -496,7 +512,10 @@ const arg_def_t *av1_ctrl_args[] = {
   &g_av1_codec_arg_defs.vmaf_resize_factor,
   &g_av1_codec_arg_defs.vmaf_rd_mult,
 #endif
-  &g_av1_codec_arg_defs.tpl_rd_mult,
+  &g_av1_codec_arg_defs.tpl_strength,
+  &g_av1_codec_arg_defs.luma_bias_strength,
+  &g_av1_codec_arg_defs.luma_bias_midpoint,
+  &g_av1_codec_arg_defs.invert_luma_bias,
   NULL,
 };
 
@@ -506,8 +525,10 @@ const arg_def_t *av1_key_val_args[] = {
   &g_av1_codec_arg_defs.second_pass_log,
   &g_av1_codec_arg_defs.fwd_kf_dist,
   &g_av1_codec_arg_defs.strict_level_conformance,
+  &g_av1_codec_arg_defs.sb_qp_sweep,
   &g_av1_codec_arg_defs.dist_metric,
   &g_av1_codec_arg_defs.kf_max_pyr_height,
+  &g_av1_codec_arg_defs.global_motion_method,
   NULL,
 };
 
@@ -588,6 +609,8 @@ struct stream_config {
   const char *vmaf_model_path;
 #endif
   const char *partition_info_path;
+  unsigned int enable_rate_guide_deltaq;
+  const char *rate_distribution_info;
   aom_color_range_t color_range;
   const char *two_pass_input;
   const char *two_pass_output;
@@ -1185,6 +1208,12 @@ static int parse_stream_params(struct AvxEncoderConfig *global,
     } else if (arg_match(&arg, &g_av1_codec_arg_defs.partition_info_path,
                          argi)) {
       config->partition_info_path = arg.val;
+    } else if (arg_match(&arg, &g_av1_codec_arg_defs.enable_rate_guide_deltaq,
+                         argi)) {
+      config->enable_rate_guide_deltaq = arg_parse_uint(&arg);
+    } else if (arg_match(&arg, &g_av1_codec_arg_defs.rate_distribution_info,
+                         argi)) {
+      config->rate_distribution_info = arg.val;
     } else if (arg_match(&arg, &g_av1_codec_arg_defs.use_fixed_qp_offsets,
                          argi)) {
       config->cfg.use_fixed_qp_offsets = arg_parse_uint(&arg);
@@ -1594,6 +1623,16 @@ static void initialize_encoder(struct stream_state *stream,
     AOM_CODEC_CONTROL_TYPECHECKED(&stream->encoder,
                                   AV1E_SET_PARTITION_INFO_PATH,
                                   stream->config.partition_info_path);
+  }
+  if (stream->config.enable_rate_guide_deltaq) {
+    AOM_CODEC_CONTROL_TYPECHECKED(&stream->encoder,
+                                  AV1E_ENABLE_RATE_GUIDE_DELTAQ,
+                                  stream->config.enable_rate_guide_deltaq);
+  }
+  if (stream->config.rate_distribution_info) {
+    AOM_CODEC_CONTROL_TYPECHECKED(&stream->encoder,
+                                  AV1E_SET_RATE_DISTRIBUTION_INFO,
+                                  stream->config.rate_distribution_info);
   }
 
   if (stream->config.film_grain_filename) {
@@ -2590,11 +2629,18 @@ int main(int argc, const char **argv_) {
 
         for (int i = 0; i < num_operating_points; i++) {
           if (levels[i] > target_levels[i]) {
-            aom_tools_warn(
-                "Failed to encode to target level %d.%d for operating point "
-                "%d. The output level is %d.%d",
-                2 + (target_levels[i] >> 2), target_levels[i] & 3, i,
-                2 + (levels[i] >> 2), levels[i] & 3);
+            if (levels[i] == 31) {
+              aom_tools_warn(
+                  "Failed to encode to target level %d.%d for operating point "
+                  "%d. The output level is SEQ_LEVEL_MAX",
+                  2 + (target_levels[i] >> 2), target_levels[i] & 3, i);
+            } else {
+              aom_tools_warn(
+                  "Failed to encode to target level %d.%d for operating point "
+                  "%d. The output level is %d.%d",
+                  2 + (target_levels[i] >> 2), target_levels[i] & 3, i,
+                  2 + (levels[i] >> 2), levels[i] & 3);
+            }
           }
         }
       }

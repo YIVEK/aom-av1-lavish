@@ -48,7 +48,7 @@ std::unordered_map<std::string,
                        { "niklas_1280_720_30.y4m",
                          { { 5, { { 0, 34.4 }, { 3, 34.30 } } },
                            { 6, { { 0, 34.2 }, { 3, 34.2 } } },
-                           { 7, { { 0, 33.5 }, { 3, 33.5 } } },
+                           { 7, { { 0, 33.5 }, { 3, 33.48 } } },
                            { 8, { { 0, 33.48 }, { 3, 33.48 } } },
                            { 9, { { 0, 33.4 }, { 3, 33.4 } } },
                            { 10, { { 0, 33.2 }, { 3, 33.2 } } } } },
@@ -192,13 +192,13 @@ TEST_P(RTEndToEndTest, EndtoEndPSNRTest) { DoTest(); }
 TEST_P(RTEndToEndTestThreaded, EndtoEndPSNRTest) { DoTest(); }
 
 AV1_INSTANTIATE_TEST_SUITE(RTEndToEndTest, ::testing::ValuesIn(kTestVectors),
-                           ::testing::Range(5, 11),
+                           ::testing::Range(5, 12),
                            ::testing::Values<unsigned int>(0, 3),
                            ::testing::Values(1), ::testing::Values(1));
 
 AV1_INSTANTIATE_TEST_SUITE(RTEndToEndTestThreaded,
                            ::testing::ValuesIn(kTestVectors),
-                           ::testing::Range(5, 11),
+                           ::testing::Range(5, 12),
                            ::testing::Values<unsigned int>(0, 3),
                            ::testing::Range(2, 5), ::testing::Range(2, 5));
 }  // namespace

@@ -53,6 +53,7 @@ static const struct arg_enum_list tuning_enum[] = {
   { "experimental", AOM_TUNE_EXPERIMENTAL },
   { "omni", AOM_TUNE_OMNI },
   { "ipq", AOM_TUNE_IMAGE_PERCEPTUAL_QUALITY },
+  { "vmaf_saliency_map", AOM_TUNE_VMAF_SALIENCY_MAP },
   { "ipq_vmaf_psy", AOM_TUNE_IMAGE_PERCEPTUAL_QUALITY_VMAF_PSY_QP }, // Tunes at this point and after use VMAF Q Adjustment
   { "vmaf_psy_qp", AOM_TUNE_FAST_VMAF_PSY_QP },
   { NULL, 0 }
@@ -148,6 +149,12 @@ static const struct arg_enum_list color_primaries_enum[] = {
   { "smpte431", AOM_CICP_CP_SMPTE_431 },
   { "smpte432", AOM_CICP_CP_SMPTE_432 },
   { "ebu3213", AOM_CICP_CP_EBU_3213 },
+  { NULL, 0 }
+};
+
+static const struct arg_enum_list global_motion_method_enum[] = {
+  { "feature-match", GLOBAL_MOTION_METHOD_FEATURE_MATCH },
+  { "disflow", GLOBAL_MOTION_METHOD_DISFLOW },
   { NULL, 0 }
 };
 #endif  // CONFIG_AV1_ENCODER
@@ -441,8 +448,9 @@ const av1_codec_arg_definitions_t g_av1_codec_arg_defs = {
               "Enable diagonal (D45 to D203) intra prediction modes, which are "
               "a subset of directional modes; has no effect if "
               "enable-directional-intra is 0 (0: false, 1: true (default))"),
-  .force_video_mode = ARG_DEF(NULL, "force-video-mode", 1,
-                              "Force video mode (0: false, 1: true (default))"),
+  .force_video_mode = ARG_DEF(
+      NULL, "force-video-mode", 1,
+      "Force video mode even for a single frame (0: false (default), 1: true)"),
   .enable_obmc = ARG_DEF(NULL, "enable-obmc", 1,
                          "Enable OBMC (0: false, 1: true (default))"),
   .enable_overlay =
@@ -508,6 +516,16 @@ const av1_codec_arg_definitions_t g_av1_codec_arg_defs = {
 #endif
   .partition_info_path = ARG_DEF(NULL, "partition-info-path", 1,
                                  "Partition information read and write path"),
+  .enable_rate_guide_deltaq =
+      ARG_DEF(NULL, "enable-rate-guide-deltaq", 1,
+              "Enable rate guide deltaq (1), by default off (0). "
+              "It requires --deltaq-mode=3. "
+              "If turned on, it requires an input file specified "
+              "by --rate-distribution-info."),
+  .rate_distribution_info =
+      ARG_DEF(NULL, "rate-distribution-info", 1,
+              "Rate distribution information input."
+              "It requires --enable-rate-guide-deltaq=1."),
   .film_grain_test = ARG_DEF(
       NULL, "film-grain-test", 1,
       "Film grain test vectors (0: none (default), 1: test-1  2: test-2, "
@@ -544,7 +562,7 @@ const av1_codec_arg_definitions_t g_av1_codec_arg_defs = {
               "Delta qindex mode (0: off, 1: deltaq objective (default), "
               "2: deltaq placeholder, 3: key frame visual quality, 4: user "
               "rating based visual quality optimization, \n "
-              "                                        5: HDR deltaq optimization); "
+              "                                        5: HDR deltaq optimization, 6: Lavish [Modified DQ1]); "
               "deltaq-mode=1/2 require --enable-tpl-model=1 as a prerequisite"),
   .deltaq_strength = ARG_DEF(NULL, "deltaq-strength", 1,
                              "Deltaq strength for"
@@ -713,8 +731,8 @@ const av1_codec_arg_definitions_t g_av1_codec_arg_defs = {
                        "Multiplier for SSIM rdmult "
                                   "(Meant for hyper-tuning, only active with ipq and ssim tunes, defaults to 100)"),
   .luma_bias = ARG_DEF(NULL, "luma-bias", 1,
-                       "Apply a bias to low luma blocks "
-                                  "(Recommended to leave default (-5..(1)..5)"),
+                       "Apply a bias to low luma blocks (Default of 20 when tune-content=psy and bias is unset, otherwise 0) "
+                                  "Value range: ((0)...100), Interactive Desmos: https://www.desmos.com/calculator/d0ho3lfiag"),
   .chroma_q_offset_u = ARG_DEF(NULL, "chroma-q-offset-u", 1,
                        "Adjust the automatic chroma Q offset for the u plane"),
   .chroma_q_offset_v = ARG_DEF(NULL, "chroma-q-offset-v", 1,
@@ -735,9 +753,21 @@ const av1_codec_arg_definitions_t g_av1_codec_arg_defs = {
   .butteraugli_rd_mult = ARG_DEF(NULL, "butteraugli-rd-mult", 1,
                        "Multiplier for butteraugli tunes rdmult "
                                   "(Meant for hyper-tuning, only active with tunes that utilize butteraugli rdo, defaults to 100)"),
+  .butteraugli_quant_mult = ARG_DEF(NULL, "butteraugli-quant-mult", 1,
+                       "Multiplier for butteraugli quantization (0 default, only for Butteraugli tunes)\n "
+                        "                                        (Set to a value higher than 0 to enable butteraugli quantization)"),
+  .butteraugli_loop_count = ARG_DEF(NULL, "butteraugli-loop-count", 1,
+                       "How many frame recode loops should be forced to re-adjust via Butteraugli (0 default, only for Butteraugli tunes)\n "
+                        "                                        (Set to a value higher than 0 to enable butteraugli looping)"),
   .butteraugli_resize_factor = ARG_DEF(NULL, "butteraugli-resize-factor", 1,
                        "Change internal resizing for faster calculations with Butteraugli tunes\n "
                        "                                        0 - Do not resize, 1 - Resize to half res (Default), 2 - Resize to quarter res."),
+  .butteraugli_quant_mult_pos = ARG_DEF(NULL, "butteraugli-quant-pos", 1,
+                       "Multiplier for positive block-based butteraugli quantization (NOT RECOMMENDED) "
+                                  "(Advanced control, defaults to -1 (Disabled))"),
+  .butteraugli_quant_mult_neg = ARG_DEF(NULL, "butteraugli-quant-neg", 1,
+                       "Multiplier for negative block-based butteraugli quantization (NOT RECOMMENDED) "
+                                  "(Advanced control, defaults to -1 (Disabled))"),
 #endif
   .loopfilter_sharpness = ARG_DEF(NULL, "loopfilter-sharpness", 1,
                        "Adjust sharpness for the loopfilter, can reduce detail blur at the expense of artifacts. ((0)..7)"),
@@ -746,13 +776,30 @@ const av1_codec_arg_definitions_t g_av1_codec_arg_defs = {
 #if CONFIG_TUNE_VMAF
   .vmaf_resize_factor = ARG_DEF(NULL, "vmaf-resize-factor", 1,
                        "Change internal resizing for faster calculations with vmaf tunes\n "
-                       "                                        0 - Resize to half (Default), 1 - Resize to a quarter."),
+                       "                                        0 - Do not resize, 1 - Resize to half res (Default), 2 - Resize to quarter res, 3 - Resize to eighth res."),
   .vmaf_rd_mult = ARG_DEF(NULL, "vmaf-rd-mult", 1,
                        "Multiplier for vmaf tunes rdmult "
                                   "(Meant for hyper-tuning, only active with tunes that utilize vmaf rdo, defaults to 100)"),
 #endif
-  .tpl_rd_mult = ARG_DEF(NULL, "tpl-rd-mult", 1,
-                       "Multiplier for tpl rdmult "
+  .tpl_strength = ARG_DEF(NULL, "tpl-strength", 1,
+                       "Multiplier for tpl filtering strength, defaults to 100 "
                                   "(Meant for hyper-tuning, defaults to 100)"),
+  .luma_bias_strength = ARG_DEF(NULL, "luma-bias-strength", 1,
+                       "Controls how steep the curve of the luma bias is, higher = steeper "
+                                  "Value range: 1..(15)..100"),
+  .luma_bias_midpoint = ARG_DEF(NULL, "luma-bias-midpoint", 1,
+                       "Controls where the center of the luma bias will be, higher = bias starts at higher luma values "
+                                  "Value range: 0..(40)..255"),
+  .invert_luma_bias = ARG_DEF(NULL, "invert-luma-bias", 1,
+                       "If inverted (1), raise rdmult in the opposite luminance direction (raises rdmult around and past the midpoint) "
+                                  "Value range: (0)...1"),
+  .sb_qp_sweep =
+      ARG_DEF(NULL, "sb-qp-sweep", 1,
+              "When set to 1, enable the superblock level qp sweep for a "
+              "given lambda to minimize the rdcost."),
+  .global_motion_method = ARG_DEF_ENUM(NULL, "global-motion-method", 1,
+                                       "Global motion search method "
+                                       "(default: disflow):",
+                                       global_motion_method_enum),
 #endif  // CONFIG_AV1_ENCODER
 };

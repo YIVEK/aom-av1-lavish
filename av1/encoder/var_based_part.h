@@ -20,6 +20,10 @@
 
 #include "av1/encoder/encoder.h"
 
+// Calculate block index x and y from split level and index
+#define GET_BLK_IDX_X(idx, level) (((idx) & (0x01)) << (level))
+#define GET_BLK_IDX_Y(idx, level) (((idx) >> (0x01)) << (level))
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,6 +32,8 @@ extern "C" {
   100  // Use increased thresholds for midres for speed 9 when qindex is above
        // this threshold
 
+#define CALC_CHROMA_THRESH_FOR_ZEROMV_SKIP(thresh_exit_part) \
+  ((3 * (thresh_exit_part)) >> 2)
 /*!\brief Set the thresholds for variance based partition.
  *
  * Set the variance split thresholds for following the block sizes:

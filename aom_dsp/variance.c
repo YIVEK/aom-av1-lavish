@@ -25,24 +25,6 @@
 #include "av1/common/filter.h"
 #include "av1/common/reconinter.h"
 
-uint32_t aom_get4x4sse_cs_c(const uint8_t *a, int a_stride, const uint8_t *b,
-                            int b_stride) {
-  int distortion = 0;
-  int r, c;
-
-  for (r = 0; r < 4; ++r) {
-    for (c = 0; c < 4; ++c) {
-      int diff = a[c] - b[c];
-      distortion += diff * diff;
-    }
-
-    a += a_stride;
-    b += b_stride;
-  }
-
-  return distortion;
-}
-
 uint32_t aom_get_mb_ss_c(const int16_t *a) {
   unsigned int i, sum = 0;
 
@@ -209,14 +191,41 @@ void aom_var_filter_block2d_bil_second_pass_c(const uint16_t *a, uint8_t *b,
     variance(a, a_stride, b, b_stride, W, H, sse, sum);                       \
   }
 
-void aom_get_sse_sum_8x8_quad_c(const uint8_t *a, int a_stride,
-                                const uint8_t *b, int b_stride, uint32_t *sse,
-                                int *sum) {
+void aom_get_var_sse_sum_8x8_quad_c(const uint8_t *a, int a_stride,
+                                    const uint8_t *b, int b_stride,
+                                    uint32_t *sse8x8, int *sum8x8,
+                                    unsigned int *tot_sse, int *tot_sum,
+                                    uint32_t *var8x8) {
   // Loop over 4 8x8 blocks. Process one 8x32 block.
   for (int k = 0; k < 4; k++) {
-    variance(a + (k * 8), a_stride, b + (k * 8), b_stride, 8, 8, &sse[k],
-             &sum[k]);
+    variance(a + (k * 8), a_stride, b + (k * 8), b_stride, 8, 8, &sse8x8[k],
+             &sum8x8[k]);
   }
+
+  // Calculate variance at 8x8 level and total sse, sum of 8x32 block.
+  *tot_sse += sse8x8[0] + sse8x8[1] + sse8x8[2] + sse8x8[3];
+  *tot_sum += sum8x8[0] + sum8x8[1] + sum8x8[2] + sum8x8[3];
+  for (int i = 0; i < 4; i++)
+    var8x8[i] = sse8x8[i] - (uint32_t)(((int64_t)sum8x8[i] * sum8x8[i]) >> 6);
+}
+
+void aom_get_var_sse_sum_16x16_dual_c(const uint8_t *src_ptr, int source_stride,
+                                      const uint8_t *ref_ptr, int ref_stride,
+                                      uint32_t *sse16x16, unsigned int *tot_sse,
+                                      int *tot_sum, uint32_t *var16x16) {
+  int sum16x16[2] = { 0 };
+  // Loop over two consecutive 16x16 blocks and process as one 16x32 block.
+  for (int k = 0; k < 2; k++) {
+    variance(src_ptr + (k * 16), source_stride, ref_ptr + (k * 16), ref_stride,
+             16, 16, &sse16x16[k], &sum16x16[k]);
+  }
+
+  // Calculate variance at 16x16 level and total sse, sum of 16x32 block.
+  *tot_sse += sse16x16[0] + sse16x16[1];
+  *tot_sum += sum16x16[0] + sum16x16[1];
+  for (int i = 0; i < 2; i++)
+    var16x16[i] =
+        sse16x16[i] - (uint32_t)(((int64_t)sum16x16[i] * sum16x16[i]) >> 8);
 }
 
 /* Identical to the variance call except it does not calculate the
@@ -254,9 +263,6 @@ VARIANCES(8, 8)
 VARIANCES(8, 4)
 VARIANCES(4, 8)
 VARIANCES(4, 4)
-VARIANCES(4, 2)
-VARIANCES(2, 4)
-VARIANCES(2, 2)
 
 // Realtime mode doesn't use rectangular blocks.
 #if !CONFIG_REALTIME_ONLY
@@ -679,9 +685,6 @@ HIGHBD_VARIANCES(8, 8)
 HIGHBD_VARIANCES(8, 4)
 HIGHBD_VARIANCES(4, 8)
 HIGHBD_VARIANCES(4, 4)
-HIGHBD_VARIANCES(4, 2)
-HIGHBD_VARIANCES(2, 4)
-HIGHBD_VARIANCES(2, 2)
 
 // Realtime mode doesn't use 4x rectangular blocks.
 #if !CONFIG_REALTIME_ONLY
@@ -1236,6 +1239,20 @@ uint64_t aom_mse_wxh_16bit_c(uint8_t *dst, int dstride, uint16_t *src,
       int e = (uint16_t)dst[i * dstride + j] - src[i * sstride + j];
       sum += e * e;
     }
+  }
+  return sum;
+}
+
+uint64_t aom_mse_16xh_16bit_c(uint8_t *dst, int dstride, uint16_t *src, int w,
+                              int h) {
+  uint16_t *src_temp = src;
+  uint8_t *dst_temp = dst;
+  const int num_blks = 16 / w;
+  int64_t sum = 0;
+  for (int i = 0; i < num_blks; i++) {
+    sum += aom_mse_wxh_16bit_c(dst_temp, dstride, src_temp, w, w, h);
+    dst_temp += w;
+    src_temp += (w * h);
   }
   return sum;
 }

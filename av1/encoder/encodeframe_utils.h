@@ -297,15 +297,37 @@ static AOM_INLINE void update_filter_type_cdf(const MACROBLOCKD *xd,
   }
 }
 
-static AOM_INLINE int set_segment_rdmult(const AV1_COMP *const cpi,
-                                         MACROBLOCK *const x,
-                                         int8_t segment_id) {
+static AOM_INLINE int set_rdmult(const AV1_COMP *const cpi,
+                                 const MACROBLOCK *const x, int segment_id) {
   const AV1_COMMON *const cm = &cpi->common;
-  av1_init_plane_quantizers(cpi, x, segment_id, 0);
-  const int segment_qindex =
-      av1_get_qindex(&cm->seg, segment_id, cm->quant_params.base_qindex);
-  return av1_compute_rd_mult(cpi,
-                             segment_qindex + cm->quant_params.y_dc_delta_q);
+  const GF_GROUP *const gf_group = &cpi->ppi->gf_group;
+  const CommonQuantParams *quant_params = &cm->quant_params;
+  const aom_bit_depth_t bit_depth = cm->seq_params->bit_depth;
+  const FRAME_UPDATE_TYPE update_type =
+      cpi->ppi->gf_group.update_type[cpi->gf_frame_index];
+  const FRAME_TYPE frame_type = cm->current_frame.frame_type;
+  const int boost_index = AOMMIN(15, (cpi->ppi->p_rc.gfu_boost / 100));
+  const int layer_depth = AOMMIN(gf_group->layer_depth[cpi->gf_frame_index], 6);
+
+  int qindex;
+  int deltaq_multiplier = 100;
+  if ((cpi->oxcf.delta_qindex_mult_pos >= 0) && (x->delta_qindex > 0)) {
+    deltaq_multiplier = cpi->oxcf.delta_qindex_mult_pos;
+  } else if ((cpi->oxcf.delta_qindex_mult_neg >= 0) && (x->delta_qindex < 0)) {
+    deltaq_multiplier = cpi->oxcf.delta_qindex_mult_neg;
+  } else {
+    deltaq_multiplier = cpi->oxcf.delta_qindex_mult;
+  }
+  if (segment_id >= 0) {
+    qindex = av1_get_qindex(&cm->seg, segment_id, cm->quant_params.base_qindex);
+  } else {
+    qindex = quant_params->base_qindex + (int)round(x->rdmult_delta_qindex * deltaq_multiplier / 100) +
+             quant_params->y_dc_delta_q;
+  }
+
+  return av1_compute_rd_mult(
+      qindex, bit_depth, update_type, layer_depth, boost_index, frame_type,
+      cpi->oxcf.q_cfg.use_fixed_qp_offsets, is_stat_consumption_stage(cpi));
 }
 
 static AOM_INLINE int do_split_check(BLOCK_SIZE bsize) {
@@ -338,6 +360,10 @@ int av1_get_q_for_deltaq_objective(AV1_COMP *const cpi, ThreadData *td,
                                    int64_t *delta_dist, BLOCK_SIZE bsize,
                                    int mi_row, int mi_col);
 
+int av1_get_q_for_deltaq_lavish(AV1_COMP *const cpi, ThreadData *td,
+                                   int64_t *delta_dist, BLOCK_SIZE bsize,
+                                   int mi_row, int mi_col, MACROBLOCK *const x);
+
 int av1_get_q_for_hdr(AV1_COMP *const cpi, MACROBLOCK *const x,
                       BLOCK_SIZE bsize);
 
@@ -353,6 +379,13 @@ int av1_get_hier_tpl_rdmult(const AV1_COMP *const cpi, MACROBLOCK *const x,
 void av1_set_ssim_rdmult(const AV1_COMP *const cpi, int *errorperbit,
                          const BLOCK_SIZE bsize, const int mi_row,
                          const int mi_col, int *const rdmult);
+
+#if CONFIG_SALIENCY_MAP
+void av1_set_saliency_map_vmaf_rdmult(const AV1_COMP *const cpi,
+                                      int *errorperbit, const BLOCK_SIZE bsize,
+                                      const int mi_row, const int mi_col,
+                                      int *const rdmult);
+#endif
 
 void av1_update_state(const AV1_COMP *const cpi, ThreadData *td,
                       const PICK_MODE_CONTEXT *const ctx, int mi_row,
@@ -391,8 +424,8 @@ void av1_update_picked_ref_frames_mask(MACROBLOCK *const x, int ref_type,
 void av1_avg_cdf_symbols(FRAME_CONTEXT *ctx_left, FRAME_CONTEXT *ctx_tr,
                          int wt_left, int wt_tr);
 
-void av1_source_content_sb(AV1_COMP *cpi, MACROBLOCK *x, int mi_row,
-                           int mi_col);
+void av1_source_content_sb(AV1_COMP *cpi, MACROBLOCK *x, TileDataEnc *tile_data,
+                           int mi_row, int mi_col);
 
 void av1_reset_mbmi(CommonModeInfoParams *const mi_params, BLOCK_SIZE sb_size,
                     int mi_row, int mi_col);
@@ -565,39 +598,6 @@ static AOM_INLINE void enforce_max_ref_frames(
   assert(total_valid_refs <= max_allowed_refs);
 }
 
-// Check if the cost update of symbols mode, coeff and dv are tile or off.
-static AOM_INLINE int is_mode_coeff_dv_upd_freq_tile_or_off(
-    const AV1_COMP *const cpi) {
-  const INTER_MODE_SPEED_FEATURES *const inter_sf = &cpi->sf.inter_sf;
-
-  return (inter_sf->coeff_cost_upd_level <= INTERNAL_COST_UPD_TILE &&
-          inter_sf->mode_cost_upd_level <= INTERNAL_COST_UPD_TILE &&
-          cpi->sf.intra_sf.dv_cost_upd_level <= INTERNAL_COST_UPD_TILE);
-}
-
-// When row-mt is enabled and cost update frequencies are set to off/tile,
-// processing of current SB can start even before processing of top-right SB
-// is finished. This function checks if it is sufficient to wait for top SB
-// to finish processing before current SB starts processing.
-static AOM_INLINE int delay_wait_for_top_right_sb(const AV1_COMP *const cpi) {
-  const MODE mode = cpi->oxcf.mode;
-  if (mode == GOOD) return 0;
-
-  if (mode == ALLINTRA)
-    return is_mode_coeff_dv_upd_freq_tile_or_off(cpi);
-  else if (mode == REALTIME)
-    return (is_mode_coeff_dv_upd_freq_tile_or_off(cpi) &&
-            cpi->sf.inter_sf.mv_cost_upd_level <= INTERNAL_COST_UPD_TILE);
-  else
-    return 0;
-}
-
-// This function checks if top right dependency wait at mi level can be enabled.
-static AOM_INLINE int enable_top_right_sync_wait_in_mis(const AV1_COMP *cpi,
-                                                        int seg_skip_active) {
-  return cpi->sf.rt_sf.top_right_sync_wait_in_mis && !seg_skip_active &&
-         delay_wait_for_top_right_sb(cpi);
-}
 #ifdef __cplusplus
 }  // extern "C"
 #endif

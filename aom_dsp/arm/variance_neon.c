@@ -27,7 +27,7 @@ static INLINE void variance_4xh_neon(const uint8_t *src, int src_stride,
   uint32x4_t ref_sum = vdupq_n_u32(0);
   uint32x4_t sse_u32 = vdupq_n_u32(0);
 
-  int i = 0;
+  int i = h;
   do {
     uint8x16_t s = load_unaligned_u8q(src, src_stride);
     uint8x16_t r = load_unaligned_u8q(ref, ref_stride);
@@ -40,8 +40,8 @@ static INLINE void variance_4xh_neon(const uint8_t *src, int src_stride,
 
     src += 4 * src_stride;
     ref += 4 * ref_stride;
-    i += 4;
-  } while (i < h);
+    i -= 4;
+  } while (i != 0);
 
   int32x4_t sum_diff =
       vsubq_s32(vreinterpretq_s32_u32(src_sum), vreinterpretq_s32_u32(ref_sum));
@@ -56,7 +56,7 @@ static INLINE void variance_8xh_neon(const uint8_t *src, int src_stride,
   uint32x4_t ref_sum = vdupq_n_u32(0);
   uint32x4_t sse_u32 = vdupq_n_u32(0);
 
-  int i = 0;
+  int i = h;
   do {
     uint8x16_t s = vcombine_u8(vld1_u8(src), vld1_u8(src + src_stride));
     uint8x16_t r = vcombine_u8(vld1_u8(ref), vld1_u8(ref + ref_stride));
@@ -69,8 +69,8 @@ static INLINE void variance_8xh_neon(const uint8_t *src, int src_stride,
 
     src += 2 * src_stride;
     ref += 2 * ref_stride;
-    i += 2;
-  } while (i < h);
+    i -= 2;
+  } while (i != 0);
 
   int32x4_t sum_diff =
       vsubq_s32(vreinterpretq_s32_u32(src_sum), vreinterpretq_s32_u32(ref_sum));
@@ -85,7 +85,7 @@ static INLINE void variance_16xh_neon(const uint8_t *src, int src_stride,
   uint32x4_t ref_sum = vdupq_n_u32(0);
   uint32x4_t sse_u32 = vdupq_n_u32(0);
 
-  int i = 0;
+  int i = h;
   do {
     uint8x16_t s = vld1q_u8(src);
     uint8x16_t r = vld1q_u8(ref);
@@ -98,8 +98,7 @@ static INLINE void variance_16xh_neon(const uint8_t *src, int src_stride,
 
     src += src_stride;
     ref += ref_stride;
-    i++;
-  } while (i < h);
+  } while (--i != 0);
 
   int32x4_t sum_diff =
       vsubq_s32(vreinterpretq_s32_u32(src_sum), vreinterpretq_s32_u32(ref_sum));
@@ -114,7 +113,7 @@ static INLINE void variance_large_neon(const uint8_t *src, int src_stride,
   uint32x4_t ref_sum = vdupq_n_u32(0);
   uint32x4_t sse_u32 = vdupq_n_u32(0);
 
-  int i = 0;
+  int i = h;
   do {
     int j = 0;
     do {
@@ -132,8 +131,7 @@ static INLINE void variance_large_neon(const uint8_t *src, int src_stride,
 
     src += src_stride;
     ref += ref_stride;
-    i++;
-  } while (i < h);
+  } while (--i != 0);
 
   int32x4_t sum_diff =
       vsubq_s32(vreinterpretq_s32_u32(src_sum), vreinterpretq_s32_u32(ref_sum));
@@ -171,7 +169,7 @@ static INLINE void variance_4xh_neon(const uint8_t *src, int src_stride,
   // 32767 / 255 ~= 128, but we use an 8-wide accumulator; so 256 4-wide rows.
   assert(h <= 256);
 
-  int i = 0;
+  int i = h;
   do {
     uint8x8_t s = load_unaligned_u8(src, src_stride);
     uint8x8_t r = load_unaligned_u8(ref, ref_stride);
@@ -184,8 +182,8 @@ static INLINE void variance_4xh_neon(const uint8_t *src, int src_stride,
 
     src += 2 * src_stride;
     ref += 2 * ref_stride;
-    i += 2;
-  } while (i < h);
+    i -= 2;
+  } while (i != 0);
 
   *sum = horizontal_add_s16x8(sum_s16);
   *sse = (uint32_t)horizontal_add_s32x4(sse_s32);
@@ -201,7 +199,7 @@ static INLINE void variance_8xh_neon(const uint8_t *src, int src_stride,
   // 32767 / 255 ~= 128
   assert(h <= 128);
 
-  int i = 0;
+  int i = h;
   do {
     uint8x8_t s = vld1_u8(src);
     uint8x8_t r = vld1_u8(ref);
@@ -215,8 +213,7 @@ static INLINE void variance_8xh_neon(const uint8_t *src, int src_stride,
 
     src += src_stride;
     ref += ref_stride;
-    i++;
-  } while (i < h);
+  } while (--i != 0);
 
   *sum = horizontal_add_s16x8(sum_s16);
   *sse = (uint32_t)horizontal_add_s32x4(vaddq_s32(sse_s32[0], sse_s32[1]));
@@ -232,7 +229,7 @@ static INLINE void variance_16xh_neon(const uint8_t *src, int src_stride,
   // 32767 / 255 ~= 128, so 128 16-wide rows.
   assert(h <= 128);
 
-  int i = 0;
+  int i = h;
   do {
     uint8x16_t s = vld1q_u8(src);
     uint8x16_t r = vld1q_u8(ref);
@@ -256,8 +253,7 @@ static INLINE void variance_16xh_neon(const uint8_t *src, int src_stride,
 
     src += src_stride;
     ref += ref_stride;
-    i++;
-  } while (i < h);
+  } while (--i != 0);
 
   *sum = horizontal_add_s16x8(vaddq_s16(sum_s16[0], sum_s16[1]));
   *sse = (uint32_t)horizontal_add_s32x4(vaddq_s32(sse_s32[0], sse_s32[1]));
@@ -390,127 +386,304 @@ void aom_get16x16var_neon(const uint8_t *src, int src_stride,
 }
 
 // TODO(yunqingwang): Perform variance of two/four 8x8 blocks similar to that of
-// AVX2.
-void aom_get_sse_sum_8x8_quad_neon(const uint8_t *src, int src_stride,
-                                   const uint8_t *ref, int ref_stride,
-                                   unsigned int *sse, int *sum) {
+// AVX2. Also, implement the NEON for variance computation present in this
+// function.
+void aom_get_var_sse_sum_8x8_quad_neon(const uint8_t *src, int src_stride,
+                                       const uint8_t *ref, int ref_stride,
+                                       uint32_t *sse8x8, int *sum8x8,
+                                       unsigned int *tot_sse, int *tot_sum,
+                                       uint32_t *var8x8) {
   // Loop over 4 8x8 blocks. Process one 8x32 block.
   for (int k = 0; k < 4; k++) {
     variance_8xh_neon(src + (k * 8), src_stride, ref + (k * 8), ref_stride, 8,
-                      &sse[k], &sum[k]);
-  }
-}
-
-unsigned int aom_mse16x16_neon(const unsigned char *src_ptr, int source_stride,
-                               const unsigned char *ref_ptr, int recon_stride,
-                               unsigned int *sse) {
-  int i;
-  int16x4_t d22s16, d23s16, d24s16, d25s16, d26s16, d27s16, d28s16, d29s16;
-  int64x1_t d0s64;
-  uint8x16_t q0u8, q1u8, q2u8, q3u8;
-  int32x4_t q7s32, q8s32, q9s32, q10s32;
-  uint16x8_t q11u16, q12u16, q13u16, q14u16;
-  int64x2_t q1s64;
-
-  q7s32 = vdupq_n_s32(0);
-  q8s32 = vdupq_n_s32(0);
-  q9s32 = vdupq_n_s32(0);
-  q10s32 = vdupq_n_s32(0);
-
-  for (i = 0; i < 8; i++) {  // mse16x16_neon_loop
-    q0u8 = vld1q_u8(src_ptr);
-    src_ptr += source_stride;
-    q1u8 = vld1q_u8(src_ptr);
-    src_ptr += source_stride;
-    q2u8 = vld1q_u8(ref_ptr);
-    ref_ptr += recon_stride;
-    q3u8 = vld1q_u8(ref_ptr);
-    ref_ptr += recon_stride;
-
-    q11u16 = vsubl_u8(vget_low_u8(q0u8), vget_low_u8(q2u8));
-    q12u16 = vsubl_u8(vget_high_u8(q0u8), vget_high_u8(q2u8));
-    q13u16 = vsubl_u8(vget_low_u8(q1u8), vget_low_u8(q3u8));
-    q14u16 = vsubl_u8(vget_high_u8(q1u8), vget_high_u8(q3u8));
-
-    d22s16 = vreinterpret_s16_u16(vget_low_u16(q11u16));
-    d23s16 = vreinterpret_s16_u16(vget_high_u16(q11u16));
-    q7s32 = vmlal_s16(q7s32, d22s16, d22s16);
-    q8s32 = vmlal_s16(q8s32, d23s16, d23s16);
-
-    d24s16 = vreinterpret_s16_u16(vget_low_u16(q12u16));
-    d25s16 = vreinterpret_s16_u16(vget_high_u16(q12u16));
-    q9s32 = vmlal_s16(q9s32, d24s16, d24s16);
-    q10s32 = vmlal_s16(q10s32, d25s16, d25s16);
-
-    d26s16 = vreinterpret_s16_u16(vget_low_u16(q13u16));
-    d27s16 = vreinterpret_s16_u16(vget_high_u16(q13u16));
-    q7s32 = vmlal_s16(q7s32, d26s16, d26s16);
-    q8s32 = vmlal_s16(q8s32, d27s16, d27s16);
-
-    d28s16 = vreinterpret_s16_u16(vget_low_u16(q14u16));
-    d29s16 = vreinterpret_s16_u16(vget_high_u16(q14u16));
-    q9s32 = vmlal_s16(q9s32, d28s16, d28s16);
-    q10s32 = vmlal_s16(q10s32, d29s16, d29s16);
+                      &sse8x8[k], &sum8x8[k]);
   }
 
-  q7s32 = vaddq_s32(q7s32, q8s32);
-  q9s32 = vaddq_s32(q9s32, q10s32);
-  q10s32 = vaddq_s32(q7s32, q9s32);
-
-  q1s64 = vpaddlq_s32(q10s32);
-  d0s64 = vadd_s64(vget_low_s64(q1s64), vget_high_s64(q1s64));
-
-  vst1_lane_u32((uint32_t *)sse, vreinterpret_u32_s64(d0s64), 0);
-  return vget_lane_u32(vreinterpret_u32_s64(d0s64), 0);
+  *tot_sse += sse8x8[0] + sse8x8[1] + sse8x8[2] + sse8x8[3];
+  *tot_sum += sum8x8[0] + sum8x8[1] + sum8x8[2] + sum8x8[3];
+  for (int i = 0; i < 4; i++)
+    var8x8[i] = sse8x8[i] - (uint32_t)(((int64_t)sum8x8[i] * sum8x8[i]) >> 6);
 }
 
-unsigned int aom_get4x4sse_cs_neon(const unsigned char *src_ptr,
-                                   int source_stride,
-                                   const unsigned char *ref_ptr,
-                                   int recon_stride) {
-  int16x4_t d22s16, d24s16, d26s16, d28s16;
-  int64x1_t d0s64;
-  uint8x8_t d0u8, d1u8, d2u8, d3u8, d4u8, d5u8, d6u8, d7u8;
-  int32x4_t q7s32, q8s32, q9s32, q10s32;
-  uint16x8_t q11u16, q12u16, q13u16, q14u16;
-  int64x2_t q1s64;
+void aom_get_var_sse_sum_16x16_dual_neon(const uint8_t *src, int src_stride,
+                                         const uint8_t *ref, int ref_stride,
+                                         uint32_t *sse16x16,
+                                         unsigned int *tot_sse, int *tot_sum,
+                                         uint32_t *var16x16) {
+  int sum16x16[2] = { 0 };
+  // Loop over 2 16x16 blocks. Process one 16x32 block.
+  for (int k = 0; k < 2; k++) {
+    variance_16xh_neon(src + (k * 16), src_stride, ref + (k * 16), ref_stride,
+                       16, &sse16x16[k], &sum16x16[k]);
+  }
 
-  d0u8 = vld1_u8(src_ptr);
-  src_ptr += source_stride;
-  d4u8 = vld1_u8(ref_ptr);
-  ref_ptr += recon_stride;
-  d1u8 = vld1_u8(src_ptr);
-  src_ptr += source_stride;
-  d5u8 = vld1_u8(ref_ptr);
-  ref_ptr += recon_stride;
-  d2u8 = vld1_u8(src_ptr);
-  src_ptr += source_stride;
-  d6u8 = vld1_u8(ref_ptr);
-  ref_ptr += recon_stride;
-  d3u8 = vld1_u8(src_ptr);
-  d7u8 = vld1_u8(ref_ptr);
+  *tot_sse += sse16x16[0] + sse16x16[1];
+  *tot_sum += sum16x16[0] + sum16x16[1];
+  for (int i = 0; i < 2; i++)
+    var16x16[i] =
+        sse16x16[i] - (uint32_t)(((int64_t)sum16x16[i] * sum16x16[i]) >> 8);
+}
 
-  q11u16 = vsubl_u8(d0u8, d4u8);
-  q12u16 = vsubl_u8(d1u8, d5u8);
-  q13u16 = vsubl_u8(d2u8, d6u8);
-  q14u16 = vsubl_u8(d3u8, d7u8);
+#if defined(__ARM_FEATURE_DOTPROD)
 
-  d22s16 = vget_low_s16(vreinterpretq_s16_u16(q11u16));
-  d24s16 = vget_low_s16(vreinterpretq_s16_u16(q12u16));
-  d26s16 = vget_low_s16(vreinterpretq_s16_u16(q13u16));
-  d28s16 = vget_low_s16(vreinterpretq_s16_u16(q14u16));
+static INLINE unsigned int mse8xh_neon(const uint8_t *src, int src_stride,
+                                       const uint8_t *ref, int ref_stride,
+                                       unsigned int *sse, int h) {
+  uint32x4_t sse_u32 = vdupq_n_u32(0);
 
-  q7s32 = vmull_s16(d22s16, d22s16);
-  q8s32 = vmull_s16(d24s16, d24s16);
-  q9s32 = vmull_s16(d26s16, d26s16);
-  q10s32 = vmull_s16(d28s16, d28s16);
+  int i = h;
+  do {
+    uint8x16_t s = vcombine_u8(vld1_u8(src), vld1_u8(src + src_stride));
+    uint8x16_t r = vcombine_u8(vld1_u8(ref), vld1_u8(ref + ref_stride));
 
-  q7s32 = vaddq_s32(q7s32, q8s32);
-  q9s32 = vaddq_s32(q9s32, q10s32);
-  q9s32 = vaddq_s32(q7s32, q9s32);
+    uint8x16_t abs_diff = vabdq_u8(s, r);
 
-  q1s64 = vpaddlq_s32(q9s32);
-  d0s64 = vadd_s64(vget_low_s64(q1s64), vget_high_s64(q1s64));
+    sse_u32 = vdotq_u32(sse_u32, abs_diff, abs_diff);
 
-  return vget_lane_u32(vreinterpret_u32_s64(d0s64), 0);
+    src += 2 * src_stride;
+    ref += 2 * ref_stride;
+    i -= 2;
+  } while (i != 0);
+
+  *sse = horizontal_add_u32x4(sse_u32);
+  return horizontal_add_u32x4(sse_u32);
+}
+
+static INLINE unsigned int mse16xh_neon(const uint8_t *src, int src_stride,
+                                        const uint8_t *ref, int ref_stride,
+                                        unsigned int *sse, int h) {
+  uint32x4_t sse_u32[2] = { vdupq_n_u32(0), vdupq_n_u32(0) };
+
+  int i = h;
+  do {
+    uint8x16_t s0 = vld1q_u8(src);
+    uint8x16_t s1 = vld1q_u8(src + src_stride);
+    uint8x16_t r0 = vld1q_u8(ref);
+    uint8x16_t r1 = vld1q_u8(ref + ref_stride);
+
+    uint8x16_t abs_diff0 = vabdq_u8(s0, r0);
+    uint8x16_t abs_diff1 = vabdq_u8(s1, r1);
+
+    sse_u32[0] = vdotq_u32(sse_u32[0], abs_diff0, abs_diff0);
+    sse_u32[1] = vdotq_u32(sse_u32[1], abs_diff1, abs_diff1);
+
+    src += 2 * src_stride;
+    ref += 2 * ref_stride;
+    i -= 2;
+  } while (i != 0);
+
+  *sse = horizontal_add_u32x4(vaddq_u32(sse_u32[0], sse_u32[1]));
+  return horizontal_add_u32x4(vaddq_u32(sse_u32[0], sse_u32[1]));
+}
+
+#else  // !defined(__ARM_FEATURE_DOTPROD)
+
+static INLINE unsigned int mse8xh_neon(const uint8_t *src, int src_stride,
+                                       const uint8_t *ref, int ref_stride,
+                                       unsigned int *sse, int h) {
+  uint8x8_t s[2], r[2];
+  int16x4_t diff_lo[2], diff_hi[2];
+  uint16x8_t diff[2];
+  int32x4_t sse_s32[2] = { vdupq_n_s32(0), vdupq_n_s32(0) };
+
+  int i = h;
+  do {
+    s[0] = vld1_u8(src);
+    src += src_stride;
+    s[1] = vld1_u8(src);
+    src += src_stride;
+    r[0] = vld1_u8(ref);
+    ref += ref_stride;
+    r[1] = vld1_u8(ref);
+    ref += ref_stride;
+
+    diff[0] = vsubl_u8(s[0], r[0]);
+    diff[1] = vsubl_u8(s[1], r[1]);
+
+    diff_lo[0] = vreinterpret_s16_u16(vget_low_u16(diff[0]));
+    diff_lo[1] = vreinterpret_s16_u16(vget_low_u16(diff[1]));
+    sse_s32[0] = vmlal_s16(sse_s32[0], diff_lo[0], diff_lo[0]);
+    sse_s32[1] = vmlal_s16(sse_s32[1], diff_lo[1], diff_lo[1]);
+
+    diff_hi[0] = vreinterpret_s16_u16(vget_high_u16(diff[0]));
+    diff_hi[1] = vreinterpret_s16_u16(vget_high_u16(diff[1]));
+    sse_s32[0] = vmlal_s16(sse_s32[0], diff_hi[0], diff_hi[0]);
+    sse_s32[1] = vmlal_s16(sse_s32[1], diff_hi[1], diff_hi[1]);
+
+    i -= 2;
+  } while (i != 0);
+
+  sse_s32[0] = vaddq_s32(sse_s32[0], sse_s32[1]);
+
+  *sse = horizontal_add_u32x4(vreinterpretq_u32_s32(sse_s32[0]));
+  return horizontal_add_u32x4(vreinterpretq_u32_s32(sse_s32[0]));
+}
+
+static INLINE unsigned int mse16xh_neon(const uint8_t *src, int src_stride,
+                                        const uint8_t *ref, int ref_stride,
+                                        unsigned int *sse, int h) {
+  uint8x16_t s[2], r[2];
+  int16x4_t diff_lo[4], diff_hi[4];
+  uint16x8_t diff[4];
+  int32x4_t sse_s32[4] = { vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0),
+                           vdupq_n_s32(0) };
+
+  int i = h;
+  do {
+    s[0] = vld1q_u8(src);
+    src += src_stride;
+    s[1] = vld1q_u8(src);
+    src += src_stride;
+    r[0] = vld1q_u8(ref);
+    ref += ref_stride;
+    r[1] = vld1q_u8(ref);
+    ref += ref_stride;
+
+    diff[0] = vsubl_u8(vget_low_u8(s[0]), vget_low_u8(r[0]));
+    diff[1] = vsubl_u8(vget_high_u8(s[0]), vget_high_u8(r[0]));
+    diff[2] = vsubl_u8(vget_low_u8(s[1]), vget_low_u8(r[1]));
+    diff[3] = vsubl_u8(vget_high_u8(s[1]), vget_high_u8(r[1]));
+
+    diff_lo[0] = vreinterpret_s16_u16(vget_low_u16(diff[0]));
+    diff_lo[1] = vreinterpret_s16_u16(vget_low_u16(diff[1]));
+    sse_s32[0] = vmlal_s16(sse_s32[0], diff_lo[0], diff_lo[0]);
+    sse_s32[1] = vmlal_s16(sse_s32[1], diff_lo[1], diff_lo[1]);
+
+    diff_lo[2] = vreinterpret_s16_u16(vget_low_u16(diff[2]));
+    diff_lo[3] = vreinterpret_s16_u16(vget_low_u16(diff[3]));
+    sse_s32[2] = vmlal_s16(sse_s32[2], diff_lo[2], diff_lo[2]);
+    sse_s32[3] = vmlal_s16(sse_s32[3], diff_lo[3], diff_lo[3]);
+
+    diff_hi[0] = vreinterpret_s16_u16(vget_high_u16(diff[0]));
+    diff_hi[1] = vreinterpret_s16_u16(vget_high_u16(diff[1]));
+    sse_s32[0] = vmlal_s16(sse_s32[0], diff_hi[0], diff_hi[0]);
+    sse_s32[1] = vmlal_s16(sse_s32[1], diff_hi[1], diff_hi[1]);
+
+    diff_hi[2] = vreinterpret_s16_u16(vget_high_u16(diff[2]));
+    diff_hi[3] = vreinterpret_s16_u16(vget_high_u16(diff[3]));
+    sse_s32[2] = vmlal_s16(sse_s32[2], diff_hi[2], diff_hi[2]);
+    sse_s32[3] = vmlal_s16(sse_s32[3], diff_hi[3], diff_hi[3]);
+
+    i -= 2;
+  } while (i != 0);
+
+  sse_s32[0] = vaddq_s32(sse_s32[0], sse_s32[1]);
+  sse_s32[2] = vaddq_s32(sse_s32[2], sse_s32[3]);
+  sse_s32[0] = vaddq_s32(sse_s32[0], sse_s32[2]);
+
+  *sse = horizontal_add_u32x4(vreinterpretq_u32_s32(sse_s32[0]));
+  return horizontal_add_u32x4(vreinterpretq_u32_s32(sse_s32[0]));
+}
+
+#endif  // defined(__ARM_FEATURE_DOTPROD)
+
+#define MSE_WXH_NEON(w, h)                                                 \
+  unsigned int aom_mse##w##x##h##_neon(const uint8_t *src, int src_stride, \
+                                       const uint8_t *ref, int ref_stride, \
+                                       unsigned int *sse) {                \
+    return mse##w##xh_neon(src, src_stride, ref, ref_stride, sse, h);      \
+  }
+
+MSE_WXH_NEON(8, 8)
+MSE_WXH_NEON(8, 16)
+
+MSE_WXH_NEON(16, 8)
+MSE_WXH_NEON(16, 16)
+
+#undef MSE_WXH_NEON
+
+#define COMPUTE_MSE_16BIT(src_16x8, dst_16x8)                           \
+  /* r7 r6 r5 r4 r3 r2 r1 r0 - 16 bit */                                \
+  const uint16x8_t diff = vabdq_u16(src_16x8, dst_16x8);                \
+  /*r3 r2 r1 r0 - 16 bit */                                             \
+  const uint16x4_t res0_low_16x4 = vget_low_u16(diff);                  \
+  /*r7 r6 r5 r4 - 16 bit */                                             \
+  const uint16x4_t res0_high_16x4 = vget_high_u16(diff);                \
+  /* (r3*r3)= b3 (r2*r2)= b2 (r1*r1)= b1 (r0*r0)= b0 - 32 bit */        \
+  const uint32x4_t res0_32x4 = vmull_u16(res0_low_16x4, res0_low_16x4); \
+  /* (r7*r7)= b7 (r6*r6)= b6 (r5*r5)= b5 (r4*r4)= b4 - 32 bit*/         \
+  /* b3+b7 b2+b6 b1+b5 b0+b4 - 32 bit*/                                 \
+  const uint32x4_t res_32x4 =                                           \
+      vmlal_u16(res0_32x4, res0_high_16x4, res0_high_16x4);             \
+                                                                        \
+  /*a1 a0 - 64 bit*/                                                    \
+  const uint64x2_t vl = vpaddlq_u32(res_32x4);                          \
+  /*a1+a2= f1 a3+a0= f0*/                                               \
+  square_result = vaddq_u64(square_result, vl);
+
+static AOM_INLINE uint64_t mse_4xh_16bit_neon(uint8_t *dst, int dstride,
+                                              uint16_t *src, int sstride,
+                                              int h) {
+  uint64x2_t square_result = vdupq_n_u64(0);
+  uint32_t d0, d1;
+  int i = h;
+  uint8_t *dst_ptr = dst;
+  uint16_t *src_ptr = src;
+  do {
+    // d03 d02 d01 d00 - 8 bit
+    memcpy(&d0, dst_ptr, 4);
+    dst_ptr += dstride;
+    // d13 d12 d11 d10 - 8 bit
+    memcpy(&d1, dst_ptr, 4);
+    dst_ptr += dstride;
+    // duplication
+    uint8x8_t tmp0_8x8 = vreinterpret_u8_u32(vdup_n_u32(d0));
+    // d03 d02 d01 d00 - 16 bit
+    const uint16x4_t dst0_16x4 = vget_low_u16(vmovl_u8(tmp0_8x8));
+    // duplication
+    tmp0_8x8 = vreinterpret_u8_u32(vdup_n_u32(d1));
+    // d13 d12 d11 d10 - 16 bit
+    const uint16x4_t dst1_16x4 = vget_low_u16(vmovl_u8(tmp0_8x8));
+    // d13 d12 d11 d10 d03 d02 d01 d00 - 16 bit
+    const uint16x8_t dst_16x8 = vcombine_u16(dst0_16x4, dst1_16x4);
+
+    // b1r0 - s03 s02 s01 s00 - 16 bit
+    const uint16x4_t src0_16x4 = vld1_u16(src_ptr);
+    src_ptr += sstride;
+    // b1r1 - s13 s12 s11 s10 - 16 bit
+    const uint16x4_t src1_16x4 = vld1_u16(src_ptr);
+    src_ptr += sstride;
+    // s13 s12 s11 s10 s03 s02 s01 s00 - 16 bit
+    const uint16x8_t src_16x8 = vcombine_u16(src0_16x4, src1_16x4);
+
+    COMPUTE_MSE_16BIT(src_16x8, dst_16x8)
+    i -= 2;
+  } while (i != 0);
+  uint64x1_t sum =
+      vadd_u64(vget_high_u64(square_result), vget_low_u64(square_result));
+  return vget_lane_u64(sum, 0);
+}
+
+static AOM_INLINE uint64_t mse_8xh_16bit_neon(uint8_t *dst, int dstride,
+                                              uint16_t *src, int sstride,
+                                              int h) {
+  uint64x2_t square_result = vdupq_n_u64(0);
+  int i = h;
+  do {
+    // d7 d6 d5 d4 d3 d2 d1 d0 - 8 bit
+    const uint16x8_t dst_16x8 = vmovl_u8(vld1_u8(dst));
+    // s7 s6 s5 s4 s3 s2 s1 s0 - 16 bit
+    const uint16x8_t src_16x8 = vld1q_u16(src);
+
+    COMPUTE_MSE_16BIT(src_16x8, dst_16x8)
+
+    dst += dstride;
+    src += sstride;
+  } while (--i != 0);
+  uint64x1_t sum =
+      vadd_u64(vget_high_u64(square_result), vget_low_u64(square_result));
+  return vget_lane_u64(sum, 0);
+}
+
+// Computes mse for a given block size. This function gets called for specific
+// block sizes, which are 8x8, 8x4, 4x8 and 4x4.
+uint64_t aom_mse_wxh_16bit_neon(uint8_t *dst, int dstride, uint16_t *src,
+                                int sstride, int w, int h) {
+  assert((w == 8 || w == 4) && (h == 8 || h == 4) &&
+         "w=8/4 and h=8/4 must satisfy");
+  switch (w) {
+    case 4: return mse_4xh_16bit_neon(dst, dstride, src, sstride, h);
+    case 8: return mse_8xh_16bit_neon(dst, dstride, src, sstride, h);
+    default: assert(0 && "unsupported width"); return -1;
+  }
 }

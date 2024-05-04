@@ -20,6 +20,8 @@
 #include "aom/aom_encoder.h"
 #include "aom/internal/aom_codec_internal.h"
 
+#include "aom_dsp/flow_estimation/flow_estimation.h"
+
 #include "av1/av1_iface_common.h"
 #include "av1/encoder/bitstream.h"
 #include "av1/encoder/encoder.h"
@@ -27,6 +29,7 @@
 #include "av1/encoder/ethread.h"
 #include "av1/encoder/external_partition.h"
 #include "av1/encoder/firstpass.h"
+#include "av1/encoder/rc_utils.h"
 #include "av1/arg_defs.h"
 
 #include "common/args_helper.h"
@@ -54,6 +57,8 @@ struct av1_extracfg {
   aom_tune_metric tuning;
   const char *vmaf_model_path;
   const char *partition_info_path;
+  unsigned int enable_rate_guide_deltaq;
+  const char *rate_distribution_info;
   aom_dist_metric dist_metric;
   unsigned int cq_level;  // constrained quality level
   unsigned int rc_max_intra_bitrate_pct;
@@ -175,6 +180,9 @@ struct av1_extracfg {
   int fwd_kf_dist;
 
   LOOPFILTER_CONTROL loopfilter_control;
+  // Indicates if the application of post-processing filters should be skipped
+  // on reconstructed frame.
+  unsigned int skip_postproc_filtering;
   // the name of the second pass output file when passes > 2
   const char *two_pass_output;
   const char *second_pass_log;
@@ -204,12 +212,22 @@ struct av1_extracfg {
   int butteraugli_intensity_target;
   int butteraugli_hf_asymmetry;
   int butteraugli_rd_mult;
+  int butteraugli_quant_mult;
+  int butteraugli_loop_count;
   int butteraugli_resize_factor;
+  int butteraugli_quant_mult_pos;
+  int butteraugli_quant_mult_neg;
   int loopfilter_sharpness;
   int enable_experimental_psy;
   int vmaf_resize_factor;
   int vmaf_rd_mult;
-  int tpl_rd_mult;
+  int tpl_strength;
+  int luma_bias_strength;
+  int luma_bias_midpoint;
+  int invert_luma_bias;
+  int luma_bias_override;
+  int sb_qp_sweep;
+  GlobalMotionMethod global_motion_method;
 };
 
 #if CONFIG_REALTIME_ONLY
@@ -249,6 +267,8 @@ static const struct av1_extracfg default_extra_cfg = {
   AOM_TUNE_PSNR,  // tuning
   "/usr/local/share/model/vmaf_v0.6.1.json",  // VMAF model path
   ".",                                        // partition info path
+  0,                                          // enable rate guide deltaq
+  "./rate_map.txt",                           // rate distribution input
   AOM_DIST_METRIC_PSNR,                       // dist_metric
   10,                                         // cq_level
   0,                                          // rc_max_intra_bitrate_pct
@@ -369,6 +389,7 @@ static const struct av1_extracfg default_extra_cfg = {
   -1,              // passes
   -1,              // fwd_kf_dist
   LOOPFILTER_ALL,  // loopfilter_control
+  0,               // skip_postproc_filtering
   NULL,            // two_pass_output
   NULL,            // second_pass_log
   0,               // auto_intra_tools_off
@@ -380,18 +401,28 @@ static const struct av1_extracfg default_extra_cfg = {
   -1,              // delta_qindex_mult_neg
   100,             // vmaf_motion_mult
   100,             // ssim_rd_mult
-  1,               // luma_bias
+  0,               // luma_bias
   0,               // vmaf_preprocessing
   0,               // vmaf_quantization
   100,             // butteraugli_intensity_target
   5,               // butteraugli_hf_asymmetry
   100,             // butteraugli_rd_mult
+  0,               // butteraugli_quant_mult
+  0,               // butteraugli_loop_count
   1,               // butteraugli_resize_factor
+  -1,              // butteraugli_quant_mult_pos
+  -1,              // butteraugli_quant_mult_neg
   0,               // loopfilter_sharpness
   0,               // enable_experimental_psy
-  0,               // vmaf_resize_factor
+  1,               // vmaf_resize_factor
   100,             // vmaf_rd_mult
-  100,             // tpl_rd_mult
+  100,             // tpl_strength
+  10,              // luma_bias_strength
+  40,              // luma_bias_midpoint
+  0,               // invert_luma_bias
+  0,               // luma_bias_override
+  0,               // sb_qp_sweep
+  GLOBAL_MOTION_METHOD_DISFLOW,  // global_motion_method
 };
 #else
 static const struct av1_extracfg default_extra_cfg = {
@@ -409,7 +440,7 @@ static const struct av1_extracfg default_extra_cfg = {
   1,              // enable_tpl_model
   1,              // enable_keyframe_filtering
   7,              // arnr_max_frames
-  5,              // arnr_strength
+  1,              // arnr_strength
   0,              // min_gf_interval; 0 -> default decision
   0,              // max_gf_interval; 0 -> default decision
   0,              // gf_min_pyr_height
@@ -417,6 +448,8 @@ static const struct av1_extracfg default_extra_cfg = {
   AOM_TUNE_PSNR,  // tuning
   "/usr/local/share/model/vmaf_v0.6.1.json",  // VMAF model path
   ".",                                        // partition info path
+  0,                                          // enable rate guide deltaq
+  "./rate_map.txt",                           // rate distribution input
   AOM_DIST_METRIC_PSNR,                       // dist_metric
   10,                                         // cq_level
   0,                                          // rc_max_intra_bitrate_pct
@@ -537,6 +570,7 @@ static const struct av1_extracfg default_extra_cfg = {
   -1,              // passes
   -1,              // fwd_kf_dist
   LOOPFILTER_ALL,  // loopfilter_control
+  0,               // skip_postproc_filtering
   NULL,            // two_pass_output
   NULL,            // second_pass_log
   0,               // auto_intra_tools_off
@@ -548,18 +582,28 @@ static const struct av1_extracfg default_extra_cfg = {
   -1,              // delta_qindex_mult_neg
   100,             // vmaf_motion_mult
   100,             // ssim_rd_mult
-  1,               // luma_bias
+  0,               // luma_bias
   0,               // vmaf_preprocessing
   0,               // vmaf_quantization
   100,             // butteraugli_intensity_target
   5,               // butteraugli_hf_asymmetry
   100,             // butteraugli_rd_mult
+  0,               // butteraugli_quant_mult
+  0,               // butteraugli_loop_count
   1,               // butteraugli_resize_factor
+  -1,              // butteraugli_quant_mult_pos
+  -1,              // butteraugli_quant_mult_neg
   0,               // loopfilter_sharpness
   0,               // enable_experimental_psy
-  0,               // vmaf_resize_factor
+  1,               // vmaf_resize_factor
   100,             // vmaf_rd_mult
-  100,             // tpl_rd_mult
+  100,             // tpl_strength
+  10,              // luma_bias_strength
+  40,              // luma_bias_midpoint
+  0,               // invert_luma_bias
+  0,               // luma_bias_override
+  0,               // sb_qp_sweep
+  GLOBAL_MOTION_METHOD_DISFLOW,  // global_motion_method
 };
 #endif
 
@@ -601,12 +645,13 @@ static INLINE int gcd(int64_t a, int b) {
   return (int)a;
 }
 
-void av1_reduce_ratio(aom_rational64_t *ratio) {
+static void reduce_ratio(aom_rational64_t *ratio) {
   const int denom = gcd(ratio->num, ratio->den);
   ratio->num /= denom;
   ratio->den /= denom;
 }
 
+// Called by encoder_encode() only. Must not be called by encoder_init().
 static aom_codec_err_t update_error_state(
     aom_codec_alg_priv_t *ctx, const struct aom_internal_error_info *error) {
   const aom_codec_err_t res = error->error_code;
@@ -678,8 +723,16 @@ static aom_codec_err_t allocate_and_set_string(const char *src,
 static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
                                        const aom_codec_enc_cfg_t *cfg,
                                        const struct av1_extracfg *extra_cfg) {
-  RANGE_CHECK(cfg, g_w, 1, 65536);  // 16 bits available
-  RANGE_CHECK(cfg, g_h, 1, 65536);  // 16 bits available
+  RANGE_CHECK(cfg, g_w, 1, 65536);                        // 16 bits available
+  RANGE_CHECK(cfg, g_h, 1, 65536);                        // 16 bits available
+  RANGE_CHECK_HI(cfg, g_forced_max_frame_width, 65536);   // 16 bits available
+  RANGE_CHECK_HI(cfg, g_forced_max_frame_height, 65536);  // 16 bits available
+  if (cfg->g_forced_max_frame_width) {
+    RANGE_CHECK_HI(cfg, g_w, cfg->g_forced_max_frame_width);
+  }
+  if (cfg->g_forced_max_frame_height) {
+    RANGE_CHECK_HI(cfg, g_h, cfg->g_forced_max_frame_height);
+  }
   RANGE_CHECK(cfg, g_timebase.den, 1, 1000000000);
   RANGE_CHECK(cfg, g_timebase.num, 1, cfg->g_timebase.den);
   RANGE_CHECK_HI(cfg, g_profile, MAX_PROFILES - 1);
@@ -750,12 +803,13 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
   RANGE_CHECK_HI(extra_cfg, enable_auto_alt_ref, 1);
   RANGE_CHECK_HI(extra_cfg, enable_auto_bwd_ref, 2);
   RANGE_CHECK(extra_cfg, cpu_used, 0,
-              (cfg->g_usage == AOM_USAGE_REALTIME) ? 10 : 9);
+              (cfg->g_usage == AOM_USAGE_REALTIME) ? 11 : 9);
   RANGE_CHECK_HI(extra_cfg, noise_sensitivity, 6);
   RANGE_CHECK(extra_cfg, superblock_size, AOM_SUPERBLOCK_SIZE_64X64,
               AOM_SUPERBLOCK_SIZE_DYNAMIC);
   RANGE_CHECK_HI(cfg, large_scale_tile, 1);
   RANGE_CHECK_HI(extra_cfg, single_tile_decoding, 1);
+  RANGE_CHECK_HI(extra_cfg, enable_rate_guide_deltaq, 1);
 
   RANGE_CHECK_HI(extra_cfg, row_mt, 1);
   RANGE_CHECK_HI(extra_cfg, fp_mt, 1);
@@ -809,6 +863,10 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
     ERROR("Current pass is larger than total number of passes.");
   }
 
+  if (cfg->g_profile == (unsigned int)PROFILE_1 && cfg->monochrome) {
+    ERROR("Monochrome is not supported in profile 1");
+  }
+
   if (cfg->g_profile <= (unsigned int)PROFILE_1 &&
       cfg->g_bit_depth > AOM_BITS_10) {
     ERROR("Codec bit-depth 12 not supported in profile < 2");
@@ -860,7 +918,6 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
        extra_cfg->tuning <= AOM_TUNE_VMAF_NEG_MAX_GAIN) ||
        extra_cfg->tuning >= AOM_TUNE_IMAGE_PERCEPTUAL_QUALITY_VMAF_PSY_QP ||
        extra_cfg->tuning == AOM_TUNE_LAVISH_VMAF_RD ||
-       extra_cfg->tuning == AOM_TUNE_EXPERIMENTAL ||
        extra_cfg->vmaf_preprocessing >= 1 ||
        extra_cfg->vmaf_quantization == 1) {
     ERROR(
@@ -870,7 +927,7 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
 #endif
 
   RANGE_CHECK(extra_cfg, tuning, AOM_TUNE_PSNR,
-              AOM_TUNE_FAST_VMAF_PSY_QP);
+              AOM_TUNE_FAST_VMAF_PSY_QP); // In mainline AOM, this is AOM_TUNE_VMAF_SALIENCY_MAP
 
   RANGE_CHECK(extra_cfg, dist_metric, AOM_DIST_METRIC_PSNR,
               AOM_DIST_METRIC_QM_PSNR);
@@ -916,9 +973,13 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
 
   RANGE_CHECK(extra_cfg, deltaq_strength, 0, 1000);
   RANGE_CHECK_HI(extra_cfg, loopfilter_control, 3);
+  RANGE_CHECK_BOOL(extra_cfg, skip_postproc_filtering);
   RANGE_CHECK_HI(extra_cfg, enable_cdef, 2);
   RANGE_CHECK_BOOL(extra_cfg, auto_intra_tools_off);
   RANGE_CHECK_BOOL(extra_cfg, strict_level_conformance);
+  RANGE_CHECK_BOOL(extra_cfg, sb_qp_sweep);
+  RANGE_CHECK(extra_cfg, global_motion_method,
+              GLOBAL_MOTION_METHOD_FEATURE_MATCH, GLOBAL_MOTION_METHOD_LAST);
 
   RANGE_CHECK(extra_cfg, kf_max_pyr_height, -1, 5);
   if (extra_cfg->kf_max_pyr_height != -1 &&
@@ -932,7 +993,7 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
   RANGE_CHECK(extra_cfg, delta_qindex_mult_neg, -1, 1000);
   RANGE_CHECK(extra_cfg, vmaf_motion_mult, 1, 1000);
   RANGE_CHECK(extra_cfg, ssim_rd_mult, 1, 1000);
-  RANGE_CHECK(extra_cfg, luma_bias, -5, 5);
+  RANGE_CHECK(extra_cfg, luma_bias, 0, 99);
   RANGE_CHECK(extra_cfg, chroma_q_offset_u, -63, 63);
   RANGE_CHECK(extra_cfg, chroma_q_offset_v, -63, 63);
 #if CONFIG_TUNE_VMAF
@@ -942,14 +1003,21 @@ static aom_codec_err_t validate_config(aom_codec_alg_priv_t *ctx,
   RANGE_CHECK(extra_cfg, butteraugli_intensity_target, 0, 2000);
   RANGE_CHECK(extra_cfg, butteraugli_hf_asymmetry, 0, 100);
   RANGE_CHECK(extra_cfg, butteraugli_rd_mult, 1, 1000);
+  RANGE_CHECK(extra_cfg, butteraugli_quant_mult, 0, 1000);
+  RANGE_CHECK(extra_cfg, butteraugli_loop_count, 0, 10);
   RANGE_CHECK(extra_cfg, butteraugli_resize_factor, 0, 2);
+  RANGE_CHECK(extra_cfg, butteraugli_quant_mult_pos, -1, 1000);
+  RANGE_CHECK(extra_cfg, butteraugli_quant_mult_neg, -1, 1000);
 #endif
 #if CONFIG_TUNE_VMAF
-  RANGE_CHECK(extra_cfg, vmaf_resize_factor, 0, 1);
+  RANGE_CHECK(extra_cfg, vmaf_resize_factor, 0, 3);
   RANGE_CHECK(extra_cfg, vmaf_rd_mult, 1, 1000);
-  RANGE_CHECK(extra_cfg, tpl_rd_mult, 1, 1000);
   RANGE_CHECK_BOOL(extra_cfg, vmaf_quantization);
 #endif
+  RANGE_CHECK(extra_cfg, tpl_strength, 0, 1000);
+  RANGE_CHECK(extra_cfg, luma_bias_strength, 1, 100);
+  RANGE_CHECK(extra_cfg, luma_bias_midpoint, 0, 255);
+  RANGE_CHECK_BOOL(extra_cfg, invert_luma_bias);
   RANGE_CHECK_HI(extra_cfg, loopfilter_sharpness, 7);
   RANGE_CHECK_BOOL(extra_cfg, enable_experimental_psy);
   return AOM_CODEC_OK;
@@ -1029,11 +1097,10 @@ static void update_default_encoder_config(const cfg_options_t *cfg,
                                           struct av1_extracfg *extra_cfg) {
   extra_cfg->enable_cdef = (cfg->disable_cdef == 0) ? 1 : 0;
   extra_cfg->enable_restoration = (cfg->disable_lr == 0);
-  extra_cfg->superblock_size = (cfg->super_block_size == 64)
-                                   ? AOM_SUPERBLOCK_SIZE_64X64
-                                   : (cfg->super_block_size == 128)
-                                         ? AOM_SUPERBLOCK_SIZE_128X128
-                                         : AOM_SUPERBLOCK_SIZE_DYNAMIC;
+  extra_cfg->superblock_size =
+      (cfg->super_block_size == 64)    ? AOM_SUPERBLOCK_SIZE_64X64
+      : (cfg->super_block_size == 128) ? AOM_SUPERBLOCK_SIZE_128X128
+                                       : AOM_SUPERBLOCK_SIZE_DYNAMIC;
   extra_cfg->enable_warped_motion = (cfg->disable_warp_motion == 0);
   extra_cfg->enable_dist_wtd_comp = (cfg->disable_dist_wtd_comp == 0);
   extra_cfg->enable_diff_wtd_comp = (cfg->disable_diff_wtd_comp == 0);
@@ -1068,9 +1135,9 @@ static void update_default_encoder_config(const cfg_options_t *cfg,
   extra_cfg->reduced_tx_type_set = cfg->reduced_tx_type_set;
 }
 
-static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
-                                          const aom_codec_enc_cfg_t *cfg,
-                                          struct av1_extracfg *extra_cfg) {
+static void set_encoder_config(AV1EncoderConfig *oxcf,
+                               const aom_codec_enc_cfg_t *cfg,
+                               struct av1_extracfg *extra_cfg) {
   if (cfg->encoder_cfg.init_by_cfg_file) {
     update_default_encoder_config(&cfg->encoder_cfg, extra_cfg);
   }
@@ -1162,16 +1229,6 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
     dec_model_cfg->decoder_model_info_present_flag = 0;
     dec_model_cfg->display_model_info_present_flag = 1;
   } else if (extra_cfg->timing_info_type == AOM_TIMING_DEC_MODEL) {
-    //    if( extra_cfg->arnr_strength > 0 )
-    //    {
-    //      printf("Only --arnr-strength=0 can currently be used with
-    //      --timing-info=model."); return AOM_CODEC_INVALID_PARAM;
-    //    }
-    //    if( extra_cfg->enable_superres)
-    //    {
-    //      printf("Only --superres-mode=0 can currently be used with
-    //      --timing-info=model."); return AOM_CODEC_INVALID_PARAM;
-    //    }
     dec_model_cfg->num_units_in_decoding_tick = cfg->g_timebase.num;
     dec_model_cfg->timing_info.equal_picture_interval = 0;
     dec_model_cfg->decoder_model_info_present_flag = 1;
@@ -1230,13 +1287,25 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
       extra_cfg->allow_ref_frame_mvs && !cfg->large_scale_tile;
   tool_cfg->superblock_size = extra_cfg->superblock_size;
   tool_cfg->enable_monochrome = cfg->monochrome;
-  tool_cfg->full_still_picture_hdr = cfg->full_still_picture_hdr;
+  tool_cfg->full_still_picture_hdr = cfg->full_still_picture_hdr != 0;
   tool_cfg->enable_dual_filter = extra_cfg->enable_dual_filter;
   tool_cfg->enable_order_hint = extra_cfg->enable_order_hint;
   tool_cfg->enable_interintra_comp = extra_cfg->enable_interintra_comp;
   tool_cfg->ref_frame_mvs_present =
       extra_cfg->enable_ref_frame_mvs & extra_cfg->enable_order_hint;
-  tool_cfg->enable_global_motion = extra_cfg->enable_global_motion;
+
+  // Explicitly disable global motion in a few cases:
+  // * For realtime mode, we never search global motion, and disabling
+  //   it here prevents later code from allocating buffers we don't need
+  // * For large scale tile mode, some of the intended use cases expect
+  //   all frame headers to be identical. This breaks if global motion is
+  //   used, since global motion data is stored in the frame header.
+  //   eg, see test/lightfield_test.sh, which checks that all frame headers
+  //   are the same.
+  tool_cfg->enable_global_motion = extra_cfg->enable_global_motion &&
+                                   cfg->g_usage != AOM_USAGE_REALTIME &&
+                                   !cfg->large_scale_tile;
+
   tool_cfg->error_resilient_mode =
       cfg->g_error_resilient | extra_cfg->error_resilient_mode;
   tool_cfg->frame_parallel_decoding_mode =
@@ -1257,9 +1326,11 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
   q_cfg->use_fixed_qp_offsets =
       cfg->use_fixed_qp_offsets && (rc_cfg->mode == AOM_Q);
   q_cfg->enable_hdr_deltaq =
-      (q_cfg->deltaq_mode == DELTA_Q_HDR) &&
+      ((q_cfg->deltaq_mode == DELTA_Q_HDR) &&
       (cfg->g_bit_depth == AOM_BITS_10) &&
-      (extra_cfg->color_primaries == AOM_CICP_CP_BT_2020);
+      (extra_cfg->color_primaries == AOM_CICP_CP_BT_2020)) ||
+      ((q_cfg->deltaq_mode == DELTA_Q_LAVISH) &&
+      (cfg->g_bit_depth == AOM_BITS_10));
 
   tool_cfg->enable_deltalf_mode =
       (q_cfg->deltaq_mode != NO_DELTA_Q) && extra_cfg->deltalf_mode;
@@ -1295,6 +1366,7 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
   algo_cfg->enable_tpl_model =
       resize_cfg->resize_mode ? 0 : extra_cfg->enable_tpl_model;
   algo_cfg->loopfilter_control = extra_cfg->loopfilter_control;
+  algo_cfg->skip_postproc_filtering = extra_cfg->skip_postproc_filtering;
 
   // Set two-pass stats configuration.
   oxcf->twopass_stats_in = cfg->rc_twopass_stats_in;
@@ -1322,6 +1394,12 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
   kf_cfg->enable_intrabc = extra_cfg->enable_intrabc;
 
   oxcf->speed = extra_cfg->cpu_used;
+  // TODO(yunqingwang, any) In REALTIME mode, 1080p performance at speed 5 & 6
+  // is quite bad. Force to use speed 7 for now. Will investigate it when we
+  // work on rd path optimization later.
+  if (oxcf->mode == REALTIME && AOMMIN(cfg->g_w, cfg->g_h) >= 1080 &&
+      oxcf->speed < 7)
+    oxcf->speed = 7;
 
   // Set Color related configuration.
   color_cfg->color_primaries = extra_cfg->color_primaries;
@@ -1528,6 +1606,9 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
 
   oxcf->partition_info_path = extra_cfg->partition_info_path;
 
+  oxcf->enable_rate_guide_deltaq = extra_cfg->enable_rate_guide_deltaq;
+  oxcf->rate_distribution_info = extra_cfg->rate_distribution_info;
+
   oxcf->strict_level_conformance = extra_cfg->strict_level_conformance;
 
   oxcf->kf_max_pyr_height = extra_cfg->kf_max_pyr_height;
@@ -1559,7 +1640,15 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
 
   oxcf->butteraugli_rd_mult = extra_cfg->butteraugli_rd_mult;
 
+  oxcf->butteraugli_quant_mult = extra_cfg->butteraugli_quant_mult;
+
+  oxcf->butteraugli_loop_count = extra_cfg->butteraugli_loop_count;
+
   oxcf->butteraugli_resize_factor = extra_cfg->butteraugli_resize_factor;
+
+  oxcf->butteraugli_quant_mult_pos = extra_cfg->butteraugli_quant_mult_pos;
+
+  oxcf->butteraugli_quant_mult_neg = extra_cfg->butteraugli_quant_mult_neg;
 #endif
 
   oxcf->loopfilter_sharpness = extra_cfg->loopfilter_sharpness;
@@ -1570,16 +1659,33 @@ static aom_codec_err_t set_encoder_config(AV1EncoderConfig *oxcf,
   oxcf->vmaf_resize_factor = extra_cfg->vmaf_resize_factor;
 
   oxcf->vmaf_rdo_bsize = (extra_cfg->vmaf_resize_factor == 0)
-                               ? BLOCK_32X32
+                               ? BLOCK_64X64
                                : (extra_cfg->vmaf_resize_factor == 1)
-                                     ? BLOCK_16X16
-                                     : BLOCK_32X32;
+                                     ? BLOCK_32X32
+                                     : (extra_cfg->vmaf_resize_factor == 2)
+                                         ? BLOCK_16X16
+                                         : (extra_cfg->vmaf_resize_factor == 3)
+                                            ? BLOCK_8X8
+                                            : BLOCK_32X32;
 
   oxcf->vmaf_rd_mult = extra_cfg->vmaf_rd_mult;
 #endif
 
-  oxcf->tpl_rd_mult = extra_cfg->tpl_rd_mult;
-  return AOM_CODEC_OK;
+  oxcf->tpl_strength = extra_cfg->tpl_strength;
+
+  oxcf->luma_bias_strength = extra_cfg->luma_bias_strength;
+
+  oxcf->luma_bias_midpoint = extra_cfg->luma_bias_midpoint;
+
+  oxcf->invert_luma_bias = extra_cfg->invert_luma_bias;
+
+  oxcf->luma_bias_override = extra_cfg->luma_bias_override;
+
+  oxcf->frame_periodic_boost = extra_cfg->frame_periodic_boost;
+
+  oxcf->sb_qp_sweep = extra_cfg->sb_qp_sweep;
+
+  oxcf->global_motion_method = extra_cfg->global_motion_method;
 }
 
 AV1EncoderConfig av1_get_encoder_config(const aom_codec_enc_cfg_t *cfg) {
@@ -1678,7 +1784,7 @@ static aom_codec_err_t ctrl_get_baseline_gf_interval(aom_codec_alg_priv_t *ctx,
 }
 
 static aom_codec_err_t update_extra_cfg(aom_codec_alg_priv_t *ctx,
-                                        struct av1_extracfg *extra_cfg) {
+                                        const struct av1_extracfg *extra_cfg) {
   const aom_codec_err_t res = validate_config(ctx, &ctx->cfg, extra_cfg);
   if (res == AOM_CODEC_OK) {
     ctx->extra_cfg = *extra_cfg;
@@ -1748,22 +1854,28 @@ static aom_codec_err_t ctrl_set_static_thresh(aom_codec_alg_priv_t *ctx,
 
 static aom_codec_err_t ctrl_set_row_mt(aom_codec_alg_priv_t *ctx,
                                        va_list args) {
+  unsigned int row_mt = CAST(AV1E_SET_ROW_MT, args);
+  if (row_mt == ctx->extra_cfg.row_mt) return AOM_CODEC_OK;
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.row_mt = CAST(AV1E_SET_ROW_MT, args);
+  extra_cfg.row_mt = row_mt;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
 static aom_codec_err_t ctrl_set_tile_columns(aom_codec_alg_priv_t *ctx,
                                              va_list args) {
+  unsigned int tile_columns = CAST(AV1E_SET_TILE_COLUMNS, args);
+  if (tile_columns == ctx->extra_cfg.tile_columns) return AOM_CODEC_OK;
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.tile_columns = CAST(AV1E_SET_TILE_COLUMNS, args);
+  extra_cfg.tile_columns = tile_columns;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
 static aom_codec_err_t ctrl_set_tile_rows(aom_codec_alg_priv_t *ctx,
                                           va_list args) {
+  unsigned int tile_rows = CAST(AV1E_SET_TILE_ROWS, args);
+  if (tile_rows == ctx->extra_cfg.tile_rows) return AOM_CODEC_OK;
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.tile_rows = CAST(AV1E_SET_TILE_ROWS, args);
+  extra_cfg.tile_rows = tile_rows;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -2267,6 +2379,9 @@ static aom_codec_err_t ctrl_set_aq_mode(aom_codec_alg_priv_t *ctx,
                                         va_list args) {
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
   extra_cfg.aq_mode = CAST(AV1E_SET_AQ_MODE, args);
+
+  // Skip AQ mode if using fixed QP for current frame.
+  if (ctx->ppi->cpi->rc.use_external_qp_one_pass) extra_cfg.aq_mode = 0;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -2372,6 +2487,25 @@ static aom_codec_err_t ctrl_set_partition_info_path(aom_codec_alg_priv_t *ctx,
   const aom_codec_err_t ret = allocate_and_set_string(
       str, default_extra_cfg.partition_info_path,
       &extra_cfg.partition_info_path, ctx->ppi->error.detail);
+  if (ret != AOM_CODEC_OK) return ret;
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_enable_rate_guide_deltaq(aom_codec_alg_priv_t *ctx,
+                                                     va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.enable_rate_guide_deltaq =
+      CAST(AV1E_ENABLE_RATE_GUIDE_DELTAQ, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_rate_distribution_info(
+    aom_codec_alg_priv_t *ctx, va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  const char *str = CAST(AV1E_SET_RATE_DISTRIBUTION_INFO, args);
+  const aom_codec_err_t ret = allocate_and_set_string(
+      str, default_extra_cfg.rate_distribution_info,
+      &extra_cfg.rate_distribution_info, ctx->ppi->error.detail);
   if (ret != AOM_CODEC_OK) return ret;
   return update_extra_cfg(ctx, &extra_cfg);
 }
@@ -2568,6 +2702,13 @@ static aom_codec_err_t ctrl_enable_sb_multipass_unit_test(
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
+static aom_codec_err_t ctrl_enable_sb_qp_sweep(aom_codec_alg_priv_t *ctx,
+                                               va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.sb_qp_sweep = CAST(AV1E_ENABLE_SB_QP_SWEEP, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
 static aom_codec_err_t ctrl_set_external_partition(aom_codec_alg_priv_t *ctx,
                                                    va_list args) {
   AV1_COMP *const cpi = ctx->ppi->cpi;
@@ -2587,11 +2728,37 @@ static aom_codec_err_t ctrl_set_loopfilter_control(aom_codec_alg_priv_t *ctx,
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
+static aom_codec_err_t ctrl_set_skip_postproc_filtering(
+    aom_codec_alg_priv_t *ctx, va_list args) {
+  // Skipping the application of post-processing filters is allowed only
+  // for ALLINTRA mode.
+  if (ctx->cfg.g_usage != AOM_USAGE_ALL_INTRA) return AOM_CODEC_INCAPABLE;
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.skip_postproc_filtering =
+      CAST(AV1E_SET_SKIP_POSTPROC_FILTERING, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
 static aom_codec_err_t ctrl_set_rtc_external_rc(aom_codec_alg_priv_t *ctx,
                                                 va_list args) {
   ctx->ppi->cpi->rc.rtc_external_ratectrl =
       CAST(AV1E_SET_RTC_EXTERNAL_RC, args);
   return AOM_CODEC_OK;
+}
+
+static aom_codec_err_t ctrl_set_quantizer_one_pass(aom_codec_alg_priv_t *ctx,
+                                                   va_list args) {
+  const int qp = CAST(AV1E_SET_QUANTIZER_ONE_PASS, args);
+
+  if (qp < 0 || qp > 63) return AOM_CODEC_INVALID_PARAM;
+
+  aom_codec_enc_cfg_t *cfg = &ctx->cfg;
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  cfg->rc_min_quantizer = cfg->rc_max_quantizer = qp;
+  extra_cfg.aq_mode = 0;
+  ctx->ppi->cpi->rc.use_external_qp_one_pass = 1;
+
+  return update_extra_cfg(ctx, &extra_cfg);
 }
 
 #if !CONFIG_REALTIME_ONLY
@@ -2627,19 +2794,33 @@ aom_codec_err_t av1_create_context_and_bufferpool(AV1_PRIMARY *ppi,
                                                   COMPRESSOR_STAGE stage,
                                                   int lap_lag_in_frames) {
   aom_codec_err_t res = AOM_CODEC_OK;
+  BufferPool *buffer_pool = *p_buffer_pool;
 
-  if (*p_buffer_pool == NULL) {
-    *p_buffer_pool = (BufferPool *)aom_calloc(1, sizeof(BufferPool));
-    if (*p_buffer_pool == NULL) return AOM_CODEC_MEM_ERROR;
-
+  if (buffer_pool == NULL) {
+    buffer_pool = (BufferPool *)aom_calloc(1, sizeof(BufferPool));
+    if (buffer_pool == NULL) return AOM_CODEC_MEM_ERROR;
+    buffer_pool->num_frame_bufs =
+        (oxcf->mode == ALLINTRA) ? FRAME_BUFFERS_ALLINTRA : FRAME_BUFFERS;
+    buffer_pool->frame_bufs = (RefCntBuffer *)aom_calloc(
+        buffer_pool->num_frame_bufs, sizeof(*buffer_pool->frame_bufs));
+    if (buffer_pool->frame_bufs == NULL) {
+      buffer_pool->num_frame_bufs = 0;
+      aom_free(buffer_pool);
+      return AOM_CODEC_MEM_ERROR;
+    }
 #if CONFIG_MULTITHREAD
-    if (pthread_mutex_init(&((*p_buffer_pool)->pool_mutex), NULL)) {
+    if (pthread_mutex_init(&buffer_pool->pool_mutex, NULL)) {
+      aom_free(buffer_pool->frame_bufs);
+      buffer_pool->frame_bufs = NULL;
+      buffer_pool->num_frame_bufs = 0;
+      aom_free(buffer_pool);
       return AOM_CODEC_MEM_ERROR;
     }
 #endif
+    *p_buffer_pool = buffer_pool;
   }
-  *p_cpi = av1_create_compressor(ppi, oxcf, *p_buffer_pool, stage,
-                                 lap_lag_in_frames);
+  *p_cpi =
+      av1_create_compressor(ppi, oxcf, buffer_pool, stage, lap_lag_in_frames);
   if (*p_cpi == NULL) res = AOM_CODEC_MEM_ERROR;
 
   return res;
@@ -2715,7 +2896,7 @@ static aom_codec_err_t encoder_init(aom_codec_ctx_t *ctx) {
       priv->timestamp_ratio.den = priv->cfg.g_timebase.den;
       priv->timestamp_ratio.num =
           (int64_t)priv->cfg.g_timebase.num * TICKS_PER_SEC;
-      av1_reduce_ratio(&priv->timestamp_ratio);
+      reduce_ratio(&priv->timestamp_ratio);
 
       set_encoder_config(&priv->oxcf, &priv->cfg, &priv->extra_cfg);
       if (priv->oxcf.rc_cfg.mode != AOM_CBR &&
@@ -2815,6 +2996,8 @@ static void destroy_extra_config(struct av1_extracfg *extra_cfg) {
                         &extra_cfg->second_pass_log);
   check_and_free_string(default_extra_cfg.partition_info_path,
                         &extra_cfg->partition_info_path);
+  check_and_free_string(default_extra_cfg.rate_distribution_info,
+                        &extra_cfg->rate_distribution_info);
   check_and_free_string(default_extra_cfg.film_grain_table_filename,
                         &extra_cfg->film_grain_table_filename);
 }
@@ -2986,7 +3169,6 @@ static aom_codec_err_t encoder_encode(aom_codec_alg_priv_t *ctx,
        ctx->extra_cfg.tuning <= AOM_TUNE_VMAF_NEG_MAX_GAIN) ||
        ctx->extra_cfg.tuning >= AOM_TUNE_IMAGE_PERCEPTUAL_QUALITY_VMAF_PSY_QP ||
        ctx->extra_cfg.tuning == AOM_TUNE_LAVISH_VMAF_RD ||
-       ctx->extra_cfg.tuning == AOM_TUNE_EXPERIMENTAL ||
        ctx->extra_cfg.vmaf_preprocessing >= 1 ||
        ctx->extra_cfg.vmaf_quantization == 1) {
     aom_init_vmaf_model(&ppi->cpi->vmaf_info.vmaf_model,
@@ -3008,10 +3190,6 @@ static aom_codec_err_t encoder_encode(aom_codec_alg_priv_t *ctx,
 
   if (res == AOM_CODEC_OK) {
     AV1_COMP *cpi = ppi->cpi;
-
-    const int num_layers =
-        cpi->svc.number_spatial_layers * cpi->svc.number_temporal_layers;
-    av1_alloc_layer_context(cpi, num_layers);
 
     // Set up internal flags
     if (ctx->base.init_flags & AOM_CODEC_USE_PSNR) ppi->b_calculate_psnr = 1;
@@ -3045,7 +3223,7 @@ static aom_codec_err_t encoder_encode(aom_codec_alg_priv_t *ctx,
         AV1EncoderConfig *oxcf = &cpi->oxcf;
         const BLOCK_SIZE sb_size = av1_select_sb_size(
             oxcf, oxcf->frm_dim_cfg.width, oxcf->frm_dim_cfg.height,
-            cpi->svc.number_spatial_layers);
+            ppi->number_spatial_layers);
         oxcf->border_in_pixels =
             av1_get_enc_border_size(av1_is_resize_needed(oxcf),
                                     oxcf->kf_cfg.key_freq_max == 0, sb_size);
@@ -3059,7 +3237,7 @@ static aom_codec_err_t encoder_encode(aom_codec_alg_priv_t *ctx,
             subsampling_x, subsampling_y, use_highbitdepth, lag_in_frames,
             src_border_in_pixels, cpi->common.features.byte_alignment,
             ctx->num_lap_buffers, (cpi->oxcf.kf_cfg.key_freq_max == 0),
-            cpi->oxcf.tool_cfg.enable_global_motion);
+            cpi->image_pyramid_levels);
       }
       if (!ppi->lookahead)
         aom_internal_error(&ppi->error, AOM_CODEC_MEM_ERROR,
@@ -3353,6 +3531,8 @@ static aom_codec_err_t ctrl_set_reference(aom_codec_alg_priv_t *ctx,
 
 static aom_codec_err_t ctrl_copy_reference(aom_codec_alg_priv_t *ctx,
                                            va_list args) {
+  if (ctx->ppi->cpi->oxcf.algo_cfg.skip_postproc_filtering)
+    return AOM_CODEC_INCAPABLE;
   av1_ref_frame_t *const frame = va_arg(args, av1_ref_frame_t *);
 
   if (frame != NULL) {
@@ -3368,6 +3548,8 @@ static aom_codec_err_t ctrl_copy_reference(aom_codec_alg_priv_t *ctx,
 
 static aom_codec_err_t ctrl_get_reference(aom_codec_alg_priv_t *ctx,
                                           va_list args) {
+  if (ctx->ppi->cpi->oxcf.algo_cfg.skip_postproc_filtering)
+    return AOM_CODEC_INCAPABLE;
   av1_ref_frame_t *const frame = va_arg(args, av1_ref_frame_t *);
 
   if (frame != NULL) {
@@ -3525,6 +3707,7 @@ static aom_codec_err_t ctrl_set_svc_params(aom_codec_alg_priv_t *ctx,
   AV1_PRIMARY *const ppi = ctx->ppi;
   AV1_COMP *const cpi = ppi->cpi;
   AV1_COMMON *const cm = &cpi->common;
+  AV1EncoderConfig *oxcf = &cpi->oxcf;
   aom_svc_params_t *const params = va_arg(args, aom_svc_params_t *);
   int64_t target_bandwidth = 0;
   ppi->number_spatial_layers = params->number_spatial_layers;
@@ -3536,7 +3719,14 @@ static aom_codec_err_t ctrl_set_svc_params(aom_codec_alg_priv_t *ctx,
     ctx->ppi->use_svc = 1;
     const int num_layers =
         ppi->number_spatial_layers * ppi->number_temporal_layers;
-    av1_alloc_layer_context(cpi, num_layers);
+    for (int layer = 0; layer < num_layers; ++layer) {
+      if (params->max_quantizers[layer] > 63 ||
+          params->min_quantizers[layer] < 0 ||
+          params->min_quantizers[layer] > params->max_quantizers[layer]) {
+        return AOM_CODEC_INVALID_PARAM;
+      }
+    }
+    if (!av1_alloc_layer_context(cpi, num_layers)) return AOM_CODEC_MEM_ERROR;
 
     for (sl = 0; sl < ppi->number_spatial_layers; ++sl) {
       for (tl = 0; tl < ppi->number_temporal_layers; ++tl) {
@@ -3561,7 +3751,10 @@ static aom_codec_err_t ctrl_set_svc_params(aom_codec_alg_priv_t *ctx,
       }
       av1_init_layer_context(cpi);
     }
+    oxcf->rc_cfg.target_bandwidth = target_bandwidth;
+    set_primary_rc_buffer_sizes(oxcf, cpi->ppi);
     av1_update_layer_context_change_config(cpi, target_bandwidth);
+    check_reset_rc_flag(cpi);
   }
   av1_check_fpmt_config(ctx->ppi, &ctx->ppi->cpi->oxcf);
   return AOM_CODEC_OK;
@@ -3572,13 +3765,13 @@ static aom_codec_err_t ctrl_set_svc_ref_frame_config(aom_codec_alg_priv_t *ctx,
   AV1_COMP *const cpi = ctx->ppi->cpi;
   aom_svc_ref_frame_config_t *const data =
       va_arg(args, aom_svc_ref_frame_config_t *);
-  cpi->rtc_ref.set_ref_frame_config = 1;
+  cpi->ppi->rtc_ref.set_ref_frame_config = 1;
   for (unsigned int i = 0; i < INTER_REFS_PER_FRAME; ++i) {
-    cpi->rtc_ref.reference[i] = data->reference[i];
-    cpi->rtc_ref.ref_idx[i] = data->ref_idx[i];
+    cpi->ppi->rtc_ref.reference[i] = data->reference[i];
+    cpi->ppi->rtc_ref.ref_idx[i] = data->ref_idx[i];
   }
   for (unsigned int i = 0; i < REF_FRAMES; ++i)
-    cpi->rtc_ref.refresh[i] = data->refresh[i];
+    cpi->ppi->rtc_ref.refresh[i] = data->refresh[i];
   cpi->svc.use_flexible_mode = 1;
   cpi->svc.ksvc_fixed_mode = 0;
   return AOM_CODEC_OK;
@@ -3589,9 +3782,9 @@ static aom_codec_err_t ctrl_set_svc_ref_frame_comp_pred(
   AV1_COMP *const cpi = ctx->ppi->cpi;
   aom_svc_ref_frame_comp_pred_t *const data =
       va_arg(args, aom_svc_ref_frame_comp_pred_t *);
-  cpi->rtc_ref.ref_frame_comp[0] = data->use_comp_pred[0];
-  cpi->rtc_ref.ref_frame_comp[1] = data->use_comp_pred[1];
-  cpi->rtc_ref.ref_frame_comp[2] = data->use_comp_pred[2];
+  cpi->ppi->rtc_ref.ref_frame_comp[0] = data->use_comp_pred[0];
+  cpi->ppi->rtc_ref.ref_frame_comp[1] = data->use_comp_pred[1];
+  cpi->ppi->rtc_ref.ref_frame_comp[2] = data->use_comp_pred[2];
   return AOM_CODEC_OK;
 }
 
@@ -3774,6 +3967,17 @@ static aom_codec_err_t encoder_set_option(aom_codec_alg_priv_t *ctx,
                             argv, err_string)) {
     err = allocate_and_set_string(value, default_extra_cfg.partition_info_path,
                                   &extra_cfg.partition_info_path, err_string);
+  } else if (arg_match_helper(&arg,
+                              &g_av1_codec_arg_defs.enable_rate_guide_deltaq,
+                              argv, err_string)) {
+    extra_cfg.enable_rate_guide_deltaq =
+        arg_parse_uint_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg,
+                              &g_av1_codec_arg_defs.rate_distribution_info,
+                              argv, err_string)) {
+    err =
+        allocate_and_set_string(value, default_extra_cfg.rate_distribution_info,
+                                &extra_cfg.rate_distribution_info, err_string);
   } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.dist_metric, argv,
                               err_string)) {
     extra_cfg.dist_metric = arg_parse_enum_helper(&arg, err_string);
@@ -4101,6 +4305,9 @@ static aom_codec_err_t encoder_set_option(aom_codec_alg_priv_t *ctx,
                               &g_av1_codec_arg_defs.strict_level_conformance,
                               argv, err_string)) {
     extra_cfg.strict_level_conformance = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.sb_qp_sweep, argv,
+                              err_string)) {
+    extra_cfg.sb_qp_sweep = arg_parse_int_helper(&arg, err_string);
   } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.kf_max_pyr_height,
                               argv, err_string)) {
     extra_cfg.kf_max_pyr_height = arg_parse_int_helper(&arg, err_string);
@@ -4153,9 +4360,21 @@ static aom_codec_err_t encoder_set_option(aom_codec_alg_priv_t *ctx,
   } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.butteraugli_rd_mult,
                               argv, err_string)) {
     extra_cfg.butteraugli_rd_mult = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.butteraugli_quant_mult,
+                              argv, err_string)) {
+    extra_cfg.butteraugli_quant_mult = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.butteraugli_loop_count,
+                              argv, err_string)) {
+    extra_cfg.butteraugli_loop_count = arg_parse_int_helper(&arg, err_string);
   } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.butteraugli_resize_factor,
                               argv, err_string)) {
     extra_cfg.butteraugli_resize_factor = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.butteraugli_quant_mult_pos,
+                              argv, err_string)) {
+    extra_cfg.butteraugli_quant_mult_pos = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.butteraugli_quant_mult_neg,
+                              argv, err_string)) {
+    extra_cfg.butteraugli_quant_mult_neg = arg_parse_int_helper(&arg, err_string);
 #endif
   } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.loopfilter_sharpness,
                               argv, err_string)) {
@@ -4171,13 +4390,25 @@ static aom_codec_err_t encoder_set_option(aom_codec_alg_priv_t *ctx,
                               argv, err_string)) {
     extra_cfg.vmaf_rd_mult = arg_parse_int_helper(&arg, err_string);
 #endif
-  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.tpl_rd_mult,
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.tpl_strength,
                               argv, err_string)) {
-    extra_cfg.tpl_rd_mult = arg_parse_int_helper(&arg, err_string);
+    extra_cfg.tpl_strength = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.luma_bias_strength,
+                              argv, err_string)) {
+    extra_cfg.luma_bias_strength = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.luma_bias_midpoint,
+                              argv, err_string)) {
+    extra_cfg.luma_bias_midpoint = arg_parse_int_helper(&arg, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.invert_luma_bias,
+                              argv, err_string)) {
+    extra_cfg.invert_luma_bias = arg_parse_int_helper(&arg, err_string);
   } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.tile_height, argv,
                               err_string)) {
     ctx->cfg.tile_height_count = arg_parse_list_helper(
         &arg, ctx->cfg.tile_heights, MAX_TILE_HEIGHTS, err_string);
+  } else if (arg_match_helper(&arg, &g_av1_codec_arg_defs.global_motion_method,
+                              argv, err_string)) {
+    extra_cfg.global_motion_method = arg_parse_enum_helper(&arg, err_string);
   } else {
     match = 0;
     snprintf(err_string, ARG_ERR_MSG_MAX_LEN, "Cannot find aom option %s",
@@ -4265,6 +4496,7 @@ static aom_codec_err_t ctrl_set_luma_bias(aom_codec_alg_priv_t *ctx,
                                           va_list args) {
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
   extra_cfg.luma_bias = CAST(AOME_SET_LUMA_BIAS, args);
+  extra_cfg.luma_bias_override = 1;
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -4317,10 +4549,38 @@ static aom_codec_err_t ctrl_set_butteraugli_rd_mult(aom_codec_alg_priv_t *ctx,
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
+static aom_codec_err_t ctrl_set_butteraugli_quant_mult(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.butteraugli_quant_mult = CAST(AOME_SET_BUTTERAUGLI_QUANT_MULT, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_butteraugli_loop_count(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.butteraugli_loop_count = CAST(AOME_SET_BUTTERAUGLI_LOOP_COUNT, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
 static aom_codec_err_t ctrl_set_butteraugli_resize_factor(aom_codec_alg_priv_t *ctx,
                                           va_list args) {
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
   extra_cfg.butteraugli_resize_factor = CAST(AOME_SET_BUTTERAUGLI_RESIZE_FACTOR, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_butteraugli_quant_mult_pos(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.butteraugli_quant_mult_pos = CAST(AOME_SET_BUTTERAUGLI_QUANT_MULT_POS, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_butteraugli_quant_mult_neg(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.butteraugli_quant_mult_neg = CAST(AOME_SET_BUTTERAUGLI_QUANT_MULT_NEG, args);
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -4352,10 +4612,38 @@ static aom_codec_err_t ctrl_set_vmaf_rd_mult(aom_codec_alg_priv_t *ctx,
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
-static aom_codec_err_t ctrl_set_tpl_rd_mult(aom_codec_alg_priv_t *ctx,
+static aom_codec_err_t ctrl_set_tpl_strength(aom_codec_alg_priv_t *ctx,
                                           va_list args) {
   struct av1_extracfg extra_cfg = ctx->extra_cfg;
-  extra_cfg.tpl_rd_mult = CAST(AOME_SET_TPL_RD_MULT, args);
+  extra_cfg.tpl_strength = CAST(AOME_SET_TPL_STRENGTH, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_luma_bias_strength(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.luma_bias_strength = CAST(AOME_SET_LUMA_BIAS_STRENGTH, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_luma_bias_midpoint(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.luma_bias_midpoint = CAST(AOME_SET_LUMA_BIAS_MIDPOINT, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_invert_luma_bias(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.invert_luma_bias = CAST(AOME_SET_INVERT_LUMA_BIAS, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static aom_codec_err_t ctrl_set_luma_bias_override(aom_codec_alg_priv_t *ctx,
+                                          va_list args) {
+  struct av1_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.luma_bias_override = CAST(AOME_SET_LUMA_BIAS_OVERRIDE, args);
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -4485,6 +4773,8 @@ static aom_codec_ctrl_fn_map_t encoder_ctrl_maps[] = {
   { AV1E_SET_SINGLE_TILE_DECODING, ctrl_set_single_tile_decoding },
   { AV1E_SET_VMAF_MODEL_PATH, ctrl_set_vmaf_model_path },
   { AV1E_SET_PARTITION_INFO_PATH, ctrl_set_partition_info_path },
+  { AV1E_ENABLE_RATE_GUIDE_DELTAQ, ctrl_enable_rate_guide_deltaq },
+  { AV1E_SET_RATE_DISTRIBUTION_INFO, ctrl_set_rate_distribution_info },
   { AV1E_SET_FILM_GRAIN_TEST_VECTOR, ctrl_set_film_grain_test_vector },
   { AV1E_SET_FILM_GRAIN_TABLE, ctrl_set_film_grain_table },
   { AV1E_SET_DENOISE_NOISE_LEVEL, ctrl_set_denoise_noise_level },
@@ -4502,10 +4792,12 @@ static aom_codec_ctrl_fn_map_t encoder_ctrl_maps[] = {
   { AV1E_SET_SVC_REF_FRAME_COMP_PRED, ctrl_set_svc_ref_frame_comp_pred },
   { AV1E_SET_VBR_CORPUS_COMPLEXITY_LAP, ctrl_set_vbr_corpus_complexity_lap },
   { AV1E_ENABLE_SB_MULTIPASS_UNIT_TEST, ctrl_enable_sb_multipass_unit_test },
+  { AV1E_ENABLE_SB_QP_SWEEP, ctrl_enable_sb_qp_sweep },
   { AV1E_SET_DV_COST_UPD_FREQ, ctrl_set_dv_cost_upd_freq },
   { AV1E_SET_EXTERNAL_PARTITION, ctrl_set_external_partition },
   { AV1E_SET_ENABLE_TX_SIZE_SEARCH, ctrl_set_enable_tx_size_search },
   { AV1E_SET_LOOPFILTER_CONTROL, ctrl_set_loopfilter_control },
+  { AV1E_SET_SKIP_POSTPROC_FILTERING, ctrl_set_skip_postproc_filtering },
   { AV1E_SET_AUTO_INTRA_TOOLS_OFF, ctrl_set_auto_intra_tools_off },
   { AV1E_SET_RTC_EXTERNAL_RC, ctrl_set_rtc_external_rc },
   { AOME_SET_DQ_MODULATE, ctrl_set_dq_modulate },
@@ -4520,12 +4812,21 @@ static aom_codec_ctrl_fn_map_t encoder_ctrl_maps[] = {
   { AOME_SET_BUTTERAUGLI_INTENSITY_TARGET, ctrl_set_butteraugli_intensity_target },
   { AOME_SET_BUTTERAUGLI_HF_ASYMMETRY, ctrl_set_butteraugli_hf_asymmetry },
   { AOME_SET_BUTTERAUGLI_RD_MULT, ctrl_set_butteraugli_rd_mult },
+  { AOME_SET_BUTTERAUGLI_QUANT_MULT, ctrl_set_butteraugli_quant_mult },
+  { AOME_SET_BUTTERAUGLI_LOOP_COUNT, ctrl_set_butteraugli_loop_count },
   { AOME_SET_BUTTERAUGLI_RESIZE_FACTOR, ctrl_set_butteraugli_resize_factor },
+  { AOME_SET_BUTTERAUGLI_QUANT_MULT_POS, ctrl_set_butteraugli_quant_mult_pos },
+  { AOME_SET_BUTTERAUGLI_QUANT_MULT_NEG, ctrl_set_butteraugli_quant_mult_neg },
   { AOME_SET_LOOPFILTER_SHARPNESS, ctrl_set_loopfilter_sharpness },
   { AOME_SET_ENABLE_EXPERIMENTAL_PSY, ctrl_set_enable_experimental_psy },
   { AOME_SET_VMAF_RESIZE_FACTOR, ctrl_set_vmaf_resize_factor },
   { AOME_SET_VMAF_RD_MULT, ctrl_set_vmaf_rd_mult },
-  { AOME_SET_TPL_RD_MULT, ctrl_set_tpl_rd_mult },
+  { AOME_SET_TPL_STRENGTH, ctrl_set_tpl_strength },
+  { AOME_SET_LUMA_BIAS_STRENGTH, ctrl_set_luma_bias_strength },
+  { AOME_SET_LUMA_BIAS_MIDPOINT, ctrl_set_luma_bias_midpoint },
+  { AOME_SET_INVERT_LUMA_BIAS, ctrl_set_invert_luma_bias },
+  { AOME_SET_LUMA_BIAS_OVERRIDE, ctrl_set_luma_bias_override },
+  { AV1E_SET_QUANTIZER_ONE_PASS, ctrl_set_quantizer_one_pass },
 
   // Getters
   { AOME_GET_LAST_QUANTIZER, ctrl_get_quantizer },
